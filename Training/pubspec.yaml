@@ -1,0 +1,54 @@
+name: training
+description: "AI Drawing & Auto-Correction System"
+publish_to: 'none'
+
+version: 1.0.0+1
+
+environment:
+  sdk: '>=3.0.0 <4.0.0'
+
+dependencies:
+  flutter:
+    sdk: flutter
+
+  cupertino_icons: ^1.0.8
+
+
+  vector_math: ^2.1.4
+
+
+
+  # Camera and image (keep if needed)
+
+  image_picker: ^1.1.2
+
+  lottie: ^2.7.0
+  # File and path
+  path_provider: ^2.1.1
+  shared_preferences: ^2.2.2
+  camera: ^0.11.2+1
+  hand_landmarker: ^2.1.2
+  image: ^4.1.4
+  permission_handler: ^11.0.1
+  provider: ^6.1.2
+
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+
+  assets:
+    - assets/backgroud/beach.jpg
+    - assets/backgroud/forest.jpg
+    - assets/backgroud/garden.jpg
+    - assets/backgroud/kitchen.jpg
+    - assets/backgroud/living_room.jpg
+    - assets/backgroud/office.jpg
+    - assets/backgroud/sky.jpg
+    - assets/images/canvas_texture.png
+    - assets/animations/paint_brush.json
