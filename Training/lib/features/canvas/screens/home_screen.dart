@@ -1,6 +1,9 @@
 import 'dart:ui';
+import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:screenshot/screenshot.dart';
+import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import '../../../providers/drawing_provider.dart';
 import '../../../providers/ai_provider.dart';
 
@@ -19,6 +22,9 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
   String _selectedTool = 'brush';
   List<Offset> _currentStroke = [];
 
+  // Add ScreenshotController at top level
+  final ScreenshotController _screenshotController = ScreenshotController();
+
   @override
   Widget build(BuildContext context) {
     final drawingProvider = Provider.of<DrawingProvider>(context);
@@ -27,12 +33,14 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
 
     return Scaffold(
       backgroundColor: Colors.grey[200],
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // Background (if selected)
-          if (aiProvider.selectedBackground != 'none')
-            Positioned.fill(
+      body: Screenshot(
+        controller: _screenshotController,
+        child: Stack(
+          fit: StackFit.expand,
+          children: [
+            // Background (if selected) - FIXED
+            aiProvider.selectedBackground != 'none'
+                ? Positioned.fill(
               child: Container(
                 decoration: BoxDecoration(
                   image: DecorationImage(
@@ -41,94 +49,101 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
                   ),
                 ),
               ),
+            )
+                : Positioned.fill(
+              child: Container(color: Colors.white),
             ),
 
-          // Drawing Canvas
-          Positioned.fill(
-            child: GestureDetector(
-              onPanStart: (details) {
-                setState(() {
-                  _currentStroke = [details.localPosition];
-                });
-              },
-              onPanUpdate: (details) {
-                setState(() {
-                  _currentStroke.add(details.localPosition);
+            // Drawing Canvas
+            Positioned.fill(
+              child: GestureDetector(
+                onPanStart: (details) {
+                  setState(() {
+                    _currentStroke = [details.localPosition];
+                  });
+                },
+                onPanUpdate: (details) {
+                  setState(() {
+                    _currentStroke.add(details.localPosition);
 
-                  // Analyze shape in real-time
-                  if (_currentStroke.length % 5 == 0) {
-                    aiProvider.analyzePoints(_currentStroke);
-                  }
-                });
-              },
-              onPanEnd: (details) {
-                // Apply AI correction if enabled
-                final correctedPoints = aiProvider.applyCorrection(_currentStroke);
+                    // Analyze shape in real-time
+                    if (_currentStroke.length % 5 == 0) {
+                      aiProvider.analyzePoints(_currentStroke);
+                    }
+                  });
+                },
+                onPanEnd: (details) {
+                  // Apply AI correction if enabled
+                  final correctedPoints = aiProvider.applyCorrection(_currentStroke);
 
-                drawingProvider.addPoints(correctedPoints);
-                _currentStroke.clear();
-                setState(() {});
-              },
-              child: CustomPaint(
-                painter: _AICanvasPainter(
-                  points: drawingProvider.points,
-                  currentStroke: _currentStroke,
-                  showAIOverlay: _showAIOverlay && aiProvider.showDetectionBoxes,
-                  aiProvider: aiProvider,
-                  selectedColor: _selectedColor,
-                  brushSize: _brushSize,
+                  drawingProvider.addPoints(correctedPoints);
+                  _currentStroke.clear();
+                  setState(() {});
+                },
+                child: RepaintBoundary(
+                  child: CustomPaint(
+                    painter: _AICanvasPainter(
+                      points: drawingProvider.points,
+                      currentStroke: _currentStroke,
+                      showAIOverlay: _showAIOverlay && aiProvider.showDetectionBoxes,
+                      aiProvider: aiProvider,
+                      selectedColor: _selectedColor,
+                      brushSize: _brushSize,
+                    ),
+                  ),
                 ),
               ),
             ),
-          ),
 
-          // Top App Bar
-          Positioned(
-            top: 0,
-            left: 0,
-            right: 0,
-            child: _buildAppBar(context, aiProvider),
-          ),
-
-          // Left Toolbar
-          if (_showTools)
+            // Top App Bar
             Positioned(
-              left: 20,
-              top: 100,
-              child: _buildLeftToolbar(context),
+              top: 0,
+              left: 0,
+              right: 0,
+              child: _buildAppBar(context, aiProvider),
             ),
 
-          // Right Toolbar (AI Controls)
-          if (_showTools)
+            // Left Toolbar
+            if (_showTools)
+              Positioned(
+                left: 20,
+                top: 100,
+                child: _buildLeftToolbar(context),
+              ),
+
+            // Right Toolbar (AI Controls)
+            if (_showTools)
+              Positioned(
+                right: 20,
+                top: 100,
+                child: _buildAIToolbar(context, aiProvider),
+              ),
+
+            // Bottom Toolbar
             Positioned(
-              right: 20,
-              top: 100,
-              child: _buildAIToolbar(context, aiProvider),
+              bottom: 0,
+              left: 0,
+              right: 0,
+              child: _buildBottomToolbar(context, drawingProvider, aiProvider),
             ),
 
-          // Bottom Toolbar
-          Positioned(
-            bottom: 0,
-            left: 0,
-            right: 0,
-            child: _buildBottomToolbar(context, drawingProvider, aiProvider),
-          ),
-
-          // AI Detection Overlay
-          if (_showAIOverlay && aiProvider.detectedShape.isNotEmpty)
-            Positioned(
-              top: 100,
-              left: screenSize.width / 2 - 150,
-              child: _buildAIDetectionCard(aiProvider),
-            ),
-        ],
+            // AI Detection Overlay
+            if (_showAIOverlay && aiProvider.detectedShape.isNotEmpty)
+              Positioned(
+                top: 100,
+                left: 10,
+                right: 10,
+                child: _buildAIDetectionCard(aiProvider, screenSize),
+              ),
+          ],
+        ),
       ),
     );
   }
 
   Widget _buildAppBar(BuildContext context, AIProvider aiProvider) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 10),
       decoration: BoxDecoration(
         color: Colors.black.withOpacity(0.8),
         border: Border(
@@ -137,44 +152,69 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
       ),
       child: Row(
         children: [
+          // Back Button
           IconButton(
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.arrow_back, color: Colors.white),
+            onPressed: () {
+              Navigator.pushNamedAndRemoveUntil(
+                context,
+                '/mode-selection',
+                    (route) => false,
+              );
+            },
+            icon: const Icon(Icons.arrow_back, color: Colors.white, size: 24),
+            tooltip: 'Back to Mode Selection',
+            padding: EdgeInsets.zero,
           ),
-          const SizedBox(width: 10),
-          const Text(
-            'AI Sketch Canvas',
-            style: TextStyle(
-              color: Colors.white,
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
+
+          // Title
+          Flexible(
+            child: Container(
+              margin: const EdgeInsets.only(left: 8),
+              child: const Text(
+                'AI Sketch Canvas',
+                style: TextStyle(
+                  color: Colors.white,
+                  fontSize: 18,
+                  fontWeight: FontWeight.bold,
+                ),
+                overflow: TextOverflow.ellipsis,
+              ),
             ),
           ),
+
           const Spacer(),
 
-          // AI Correction Toggle
+          // AI Toggle
           Row(
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Icon(
-                Icons.auto_awesome,
-                color: aiProvider.autoCorrectionEnabled ? Colors.green : Colors.grey,
-                size: 20,
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: Icon(
+                  Icons.auto_awesome,
+                  color: aiProvider.autoCorrectionEnabled ? Colors.green : Colors.grey,
+                  size: 18,
+                ),
               ),
-              const SizedBox(width: 5),
               Switch(
                 value: aiProvider.autoCorrectionEnabled,
                 onChanged: (value) => aiProvider.toggleAutoCorrection(),
                 activeColor: Colors.green,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
               ),
             ],
           ),
 
+          // Visibility Toggle
           IconButton(
             onPressed: () => setState(() => _showTools = !_showTools),
             icon: Icon(
               _showTools ? Icons.visibility_off : Icons.visibility,
               color: Colors.white,
+              size: 22,
             ),
+            tooltip: 'Toggle Tools',
+            padding: EdgeInsets.zero,
           ),
         ],
       ),
@@ -426,16 +466,15 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
               // Action Buttons
               Row(
                 children: [
+                  // SAVE BUTTON - NOW ACTIVE
                   IconButton(
-                    onPressed: () {
-                      // TODO: Implement save
-                    },
+                    onPressed: () => _saveDrawing(context, drawingProvider),
                     icon: const Icon(Icons.save, color: Colors.white),
-                    tooltip: 'Save',
+                    tooltip: 'Save Drawing',
                   ),
                   IconButton(
                     onPressed: () {
-                      // TODO: Implement erase
+                      _toggleEraser(drawingProvider);
                     },
                     icon: const Icon(Icons.cleaning_services, color: Colors.white),
                     tooltip: 'Erase',
@@ -453,9 +492,11 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
       ),
     );
   }
-  Widget _buildAIDetectionCard(AIProvider aiProvider) {
+
+  Widget _buildAIDetectionCard(AIProvider aiProvider, Size screenSize) {
     return Container(
-      width: 300,
+      width: screenSize.width * 0.8,
+      constraints: const BoxConstraints(maxWidth: 300),
       padding: const EdgeInsets.all(15),
       decoration: BoxDecoration(
         color: Colors.black.withOpacity(0.8),
@@ -527,6 +568,124 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
     );
   }
 
+  // Save Drawing Function
+  Future<void> _saveDrawing(BuildContext context, DrawingProvider drawingProvider) async {
+    // Debug: Check if there are points to save
+    print("Debug: Total points to save = ${drawingProvider.points.length}");
+
+    if (drawingProvider.points.isEmpty && _currentStroke.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No drawing to save! Please draw something first.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    // Show saving dialog
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.black.withOpacity(0.8),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            const Text(
+              'Saving drawing...',
+              style: TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Points: ${drawingProvider.points.length}',
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      // Add a small delay to ensure UI is rendered
+      await Future.delayed(const Duration(milliseconds: 100));
+
+      // Capture screenshot with higher pixel ratio for better quality
+      final bytes = await _screenshotController.capture(
+        delay: const Duration(milliseconds: 100),
+        pixelRatio: 2.0, // Higher resolution
+      );
+
+      if (bytes == null) {
+        throw Exception('Failed to capture screenshot - bytes is null');
+      }
+
+      print("Debug: Screenshot captured - ${bytes.length} bytes");
+
+      // Save to gallery
+      final result = await ImageGallerySaverPlus.saveImage(
+        Uint8List.fromList(bytes),
+        quality: 100,
+        name: 'ai_drawing_${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+      print("Debug: Save result = $result");
+
+      if (result['isSuccess'] != true) {
+        throw Exception('Failed to save to gallery: ${result['errorMessage']}');
+      }
+
+      // Close dialog
+      if (mounted) Navigator.of(context).pop();
+
+      // Show success message
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Drawing saved successfully to gallery!'),
+          backgroundColor: Colors.green,
+          action: SnackBarAction(
+            label: 'OK',
+            onPressed: () {},
+            textColor: Colors.white,
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+
+    } catch (e) {
+      // Close dialog
+      if (mounted) Navigator.of(context).pop();
+
+      // Show error message
+      print("Error saving: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to save: ${e.toString()}'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
+
+  void _toggleEraser(DrawingProvider drawingProvider) {
+    drawingProvider.toggleEraser();
+    setState(() {
+      _selectedColor = drawingProvider.isErasing ? Colors.white : Colors.black;
+    });
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          drawingProvider.isErasing ? 'Eraser activated' : 'Drawing mode',
+        ),
+        backgroundColor: drawingProvider.isErasing ? Colors.blue : Colors.black,
+        duration: const Duration(seconds: 1),
+      ),
+    );
+  }
 
   String _getShapeTips(String shape) {
     switch (shape) {
@@ -629,22 +788,49 @@ class _AICanvasPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Draw all completed points
-    final paint = Paint()
-      ..color = selectedColor
-      ..strokeWidth = brushSize
-      ..strokeCap = StrokeCap.round
-      ..isAntiAlias = true;
+    // Draw background (transparent so white shows through)
+    final backgroundPaint = Paint()..color = Colors.transparent;
+    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), backgroundPaint);
 
-    for (int i = 0; i < points.length - 1; i++) {
-      canvas.drawLine(points[i], points[i + 1], paint);
+    // Draw all completed points
+    if (points.isNotEmpty) {
+      final paint = Paint()
+        ..color = selectedColor
+        ..strokeWidth = brushSize
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke
+        ..isAntiAlias = true;
+
+      // Use Path for smoother lines
+      if (points.length > 1) {
+        final path = Path();
+        path.moveTo(points.first.dx, points.first.dy);
+
+        for (int i = 1; i < points.length; i++) {
+          path.lineTo(points[i].dx, points[i].dy);
+        }
+
+        canvas.drawPath(path, paint);
+      }
     }
 
     // Draw current stroke
     if (currentStroke.length > 1) {
-      for (int i = 0; i < currentStroke.length - 1; i++) {
-        canvas.drawLine(currentStroke[i], currentStroke[i + 1], paint);
+      final currentPaint = Paint()
+        ..color = selectedColor
+        ..strokeWidth = brushSize
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke
+        ..isAntiAlias = true;
+
+      final currentPath = Path();
+      currentPath.moveTo(currentStroke.first.dx, currentStroke.first.dy);
+
+      for (int i = 1; i < currentStroke.length; i++) {
+        currentPath.lineTo(currentStroke[i].dx, currentStroke[i].dy);
       }
+
+      canvas.drawPath(currentPath, currentPaint);
     }
 
     // Draw AI detection boxes
