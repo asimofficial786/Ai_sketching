@@ -6,6 +6,7 @@ import 'package:screenshot/screenshot.dart';
 import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import '../../../providers/drawing_provider.dart';
 import '../../../providers/ai_provider.dart';
+import 'dart:math';
 
 class CompleteCanvasScreen extends StatefulWidget {
   const CompleteCanvasScreen({super.key});
@@ -20,10 +21,23 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
   double _brushSize = 5.0;
   Color _selectedColor = Colors.black;
   String _selectedTool = 'brush';
-  List<Offset> _currentStroke = [];
 
-  // Add ScreenshotController at top level
+  // Add ScreenshotController
   final ScreenshotController _screenshotController = ScreenshotController();
+
+  @override
+  void initState() {
+    super.initState();
+    // Initialize with provider values
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final drawingProvider = context.read<DrawingProvider>();
+      setState(() {
+        _brushSize = drawingProvider.currentStrokeWidth;
+        _selectedColor = drawingProvider.currentColor;
+        _selectedTool = drawingProvider.currentTool;
+      });
+    });
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -38,59 +52,66 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
         child: Stack(
           fit: StackFit.expand,
           children: [
-            // Background (if selected) - FIXED
-            aiProvider.selectedBackground != 'none'
-                ? Positioned.fill(
-              child: Container(
-                decoration: BoxDecoration(
-                  image: DecorationImage(
-                    image: AssetImage(aiProvider.selectedBackground),
-                    fit: BoxFit.cover,
-                  ),
-                ),
-              ),
-            )
-                : Positioned.fill(
-              child: Container(color: Colors.white),
+            // Background - FIXED
+            Positioned.fill(
+              child: _getBackgroundWidget(aiProvider),
             ),
 
             // Drawing Canvas
             Positioned.fill(
               child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
                 onPanStart: (details) {
-                  setState(() {
-                    _currentStroke = [details.localPosition];
-                  });
+                  drawingProvider.startDrawing(details.localPosition);
                 },
                 onPanUpdate: (details) {
-                  setState(() {
-                    _currentStroke.add(details.localPosition);
+                  drawingProvider.updateDrawing(details.localPosition);
 
-                    // Analyze shape in real-time
-                    if (_currentStroke.length % 5 == 0) {
-                      aiProvider.analyzePoints(_currentStroke);
+                  // Analyze for AI if not drawing shapes
+                  if (drawingProvider.currentTool != 'shapes' && drawingProvider.currentTool != 'text') {
+                    final currentStroke = drawingProvider.currentStroke;
+                    if (currentStroke.length > 5 && currentStroke.length % 10 == 0) {
+                      aiProvider.analyzePoints(currentStroke);
                     }
-                  });
+                  }
                 },
                 onPanEnd: (details) {
-                  // Apply AI correction if enabled
-                  final correctedPoints = aiProvider.applyCorrection(_currentStroke);
+                  drawingProvider.stopDrawing();
 
-                  drawingProvider.addPoints(correctedPoints);
-                  _currentStroke.clear();
-                  setState(() {});
+                  // Apply AI correction for freehand drawings only
+                  if (drawingProvider.currentTool != 'shapes' &&
+                      drawingProvider.currentTool != 'text') {
+                    if (aiProvider.autoCorrectionEnabled && drawingProvider.currentStroke.isNotEmpty) {
+                      final correctedPoints = aiProvider.applyAutoCorrection(drawingProvider.currentStroke);// <-- THIS LINE
+                      if (correctedPoints.isNotEmpty && correctedPoints.length >= 2) {
+                        drawingProvider.removeLastStroke();
+                        drawingProvider.addCorrectedStroke(correctedPoints);
+                      }
+                    }
+                    aiProvider.clearDetections();
+                  }
                 },
-                child: RepaintBoundary(
-                  child: CustomPaint(
-                    painter: _AICanvasPainter(
-                      points: drawingProvider.points,
-                      currentStroke: _currentStroke,
-                      showAIOverlay: _showAIOverlay && aiProvider.showDetectionBoxes,
-                      aiProvider: aiProvider,
-                      selectedColor: _selectedColor,
-                      brushSize: _brushSize,
-                    ),
-                  ),
+                child: Consumer2<DrawingProvider, AIProvider>(
+                  builder: (context, drawingProvider, aiProvider, child) {
+                    return RepaintBoundary(
+                      child: CustomPaint(
+                        painter: _AICanvasPainter(
+                          strokes: drawingProvider.strokes,
+                          currentStroke: drawingProvider.currentStroke,
+                          strokeColors: drawingProvider.strokeColors,
+                          strokeWidths: drawingProvider.strokeWidths,
+                          showAIOverlay: _showAIOverlay && aiProvider.showDetectionBoxes,
+                          aiProvider: aiProvider,
+                          selectedColor: drawingProvider.currentColor,
+                          brushSize: _brushSize,
+                          shapePreviewPoints: drawingProvider.shapePreviewPoints,
+                          selectedShape: drawingProvider.selectedShape,
+                          isDrawingShape: drawingProvider.isDrawingShape,
+                          texts: drawingProvider.texts,
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ),
             ),
@@ -108,7 +129,7 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
               Positioned(
                 left: 20,
                 top: 100,
-                child: _buildLeftToolbar(context),
+                child: _buildLeftToolbar(context, drawingProvider),
               ),
 
             // Right Toolbar (AI Controls)
@@ -135,10 +156,146 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
                 right: 10,
                 child: _buildAIDetectionCard(aiProvider, screenSize),
               ),
+
+            // Debug button (remove after testing)
+            Positioned(
+              top: 150,
+              right: 20,
+              child: FloatingActionButton.small(
+                onPressed: () {
+                  _debugBackground(aiProvider);
+                },
+                child: Icon(Icons.bug_report),
+              ),
+            ),
           ],
         ),
       ),
     );
+  }
+
+  // FIXED: Background widget method
+  Widget _getBackgroundWidget(AIProvider aiProvider) {
+    // If "None" is selected, show white background
+    if (aiProvider.selectedBackground == 'none') {
+      return Container(color: Colors.white);
+    }
+
+    try {
+      // Find the background object by name
+      final background = aiProvider.backgrounds.firstWhere(
+            (bg) => bg.name == aiProvider.selectedBackground,
+      );
+
+      // If we found it and it has a path, show the image
+      if (background.path.isNotEmpty) {
+        return Image.asset(
+          background.path,
+          fit: BoxFit.cover,
+          errorBuilder: (context, error, stackTrace) {
+            // If image fails to load, show error placeholder
+            print('Error loading background image: $error');
+            print('Path: ${background.path}');
+            return Container(
+              color: Colors.grey[300],
+              child: Center(
+                child: Column(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(Icons.broken_image, size: 50, color: Colors.grey[600]),
+                    SizedBox(height: 10),
+                    Text(
+                      'Background not found',
+                      style: TextStyle(color: Colors.grey[600]),
+                    ),
+                    Text(
+                      background.name,
+                      style: TextStyle(fontSize: 12, color: Colors.grey[500]),
+                    ),
+                  ],
+                ),
+              ),
+            );
+          },
+        );
+      } else {
+        // No path (shouldn't happen except for "None")
+        return Container(color: Colors.white);
+      }
+    } catch (e) {
+      // Background not found in list
+      print('Error: Background "${aiProvider.selectedBackground}" not found');
+      return Container(color: Colors.white);
+    }
+  }
+  // Helper method for auto-correction
+  void _applyAutoCorrection(BuildContext context, DrawingProvider drawingProvider, AIProvider aiProvider) {
+    if (drawingProvider.strokes.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('No drawing to correct!'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    // Get the last drawn stroke
+    final lastStroke = drawingProvider.getLastStroke();
+    if (lastStroke != null && lastStroke.length >= 2) {
+      final strokeIndex = drawingProvider.getLastStrokeIndex();
+
+      // Use applyManualCorrection
+      final correctedPoints = aiProvider.applyManualCorrection(lastStroke);
+
+      // Check if correction actually changed something
+      if (correctedPoints.length >= 2) {
+        // Apply the correction
+        drawingProvider.applyAutoCorrection(correctedPoints, strokeIndex);
+
+        // Show success message
+        final shapeType = aiProvider.detectedShape.isNotEmpty
+            ? aiProvider.detectedShape
+            : 'shape';
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Auto-corrected to $shapeType'),
+            backgroundColor: Colors.green,
+            duration: Duration(seconds: 2),
+          ),
+        );
+
+        // Clear AI detections for fresh analysis
+        aiProvider.clearDetections();
+      } else {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text('Could not detect shape for correction'),
+            backgroundColor: Colors.orange,
+          ),
+        );
+      }
+    }
+  }
+
+  void _debugBackground(AIProvider aiProvider) {
+    print('=== BACKGROUND DEBUG ===');
+    print('Selected background: ${aiProvider.selectedBackground}');
+    print('Available backgrounds:');
+    for (var bg in aiProvider.backgrounds) {
+      print('  - ${bg.name}: ${bg.path}');
+    }
+
+    if (aiProvider.selectedBackground != 'none') {
+      try {
+        final bg = aiProvider.backgrounds.firstWhere(
+              (b) => b.name == aiProvider.selectedBackground,
+        );
+        print('Found: ${bg.name} -> ${bg.path}');
+      } catch (e) {
+        print('Error finding background: $e');
+      }
+    }
   }
 
   Widget _buildAppBar(BuildContext context, AIProvider aiProvider) {
@@ -221,7 +378,7 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
     );
   }
 
-  Widget _buildLeftToolbar(BuildContext context) {
+  Widget _buildLeftToolbar(BuildContext context, DrawingProvider drawingProvider) {
     return Container(
       width: 60,
       padding: const EdgeInsets.all(10),
@@ -238,50 +395,119 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
       ),
       child: Column(
         children: [
+          // Brush
           _ToolButton(
             icon: Icons.brush,
             label: 'Brush',
-            isSelected: _selectedTool == 'brush',
-            onTap: () => setState(() => _selectedTool = 'brush'),
+            isSelected: drawingProvider.currentTool == 'brush',
+            onTap: () {
+              drawingProvider.selectTool('brush');
+              drawingProvider.updateStrokeWidth(5.0);
+              setState(() {
+                _selectedTool = 'brush';
+                _selectedColor = drawingProvider.currentColor;
+                _brushSize = 5.0;
+              });
+            },
           ),
+
+          // Pencil
           _ToolButton(
             icon: Icons.edit,
             label: 'Pencil',
-            isSelected: _selectedTool == 'pencil',
-            onTap: () => setState(() => _selectedTool = 'pencil'),
+            isSelected: drawingProvider.currentTool == 'pencil',
+            onTap: () {
+              drawingProvider.selectTool('pencil');
+              drawingProvider.updateStrokeWidth(2.0);
+              setState(() {
+                _selectedTool = 'pencil';
+                _selectedColor = drawingProvider.currentColor;
+                _brushSize = 2.0;
+              });
+            },
           ),
+
+          // Shapes
           _ToolButton(
             icon: Icons.format_shapes,
             label: 'Shapes',
-            isSelected: _selectedTool == 'shapes',
-            onTap: () => setState(() => _selectedTool = 'shapes'),
+            isSelected: drawingProvider.currentTool == 'shapes',
+            onTap: () {
+              _showShapeSelectionDialog(context, drawingProvider);
+            },
           ),
+
+          // Text
           _ToolButton(
             icon: Icons.text_fields,
             label: 'Text',
-            isSelected: _selectedTool == 'text',
-            onTap: () => setState(() => _selectedTool = 'text'),
+            isSelected: drawingProvider.currentTool == 'text',
+            onTap: () {
+              _showTextInputDialog(context, drawingProvider);
+            },
           ),
+
           const Divider(color: Colors.white30, height: 20),
+
+          // Undo
           _ToolButton(
             icon: Icons.undo,
             label: 'Undo',
+            isSelected: false,
             onTap: () {
-              // TODO: Implement undo
+              final drawingProvider = Provider.of<DrawingProvider>(context, listen: false);
+              if (drawingProvider.canUndo) {
+                drawingProvider.undo();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Undo performed'),
+                    duration: Duration(milliseconds: 800),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Nothing to undo'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              }
             },
           ),
+
+          // Redo
           _ToolButton(
             icon: Icons.redo,
             label: 'Redo',
+            isSelected: false,
             onTap: () {
-              // TODO: Implement redo
+              final drawingProvider = Provider.of<DrawingProvider>(context, listen: false);
+              if (drawingProvider.canRedo) {
+                drawingProvider.redo();
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Redo performed'),
+                    duration: Duration(milliseconds: 800),
+                  ),
+                );
+              } else {
+                ScaffoldMessenger.of(context).showSnackBar(
+                  const SnackBar(
+                    content: Text('Nothing to redo'),
+                    duration: Duration(seconds: 1),
+                  ),
+                );
+              }
             },
           ),
+
+          // Clear
           _ToolButton(
             icon: Icons.delete,
             label: 'Clear',
+            isSelected: false,
             onTap: () {
-              // TODO: Implement clear
+              _showClearConfirmationDialog(context, drawingProvider);
             },
           ),
         ],
@@ -417,24 +643,16 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
             scrollDirection: Axis.horizontal,
             child: Row(
               children: [
-                _ColorButton(color: Colors.black, isSelected: _selectedColor == Colors.black),
-                _ColorButton(color: Colors.red, isSelected: _selectedColor == Colors.red),
-                _ColorButton(color: Colors.blue, isSelected: _selectedColor == Colors.blue),
-                _ColorButton(color: Colors.green, isSelected: _selectedColor == Colors.green),
-                _ColorButton(color: Colors.yellow, isSelected: _selectedColor == Colors.yellow),
-                _ColorButton(color: Colors.purple, isSelected: _selectedColor == Colors.purple),
-                _ColorButton(color: Colors.orange, isSelected: _selectedColor == Colors.orange),
-                _ColorButton(color: Colors.brown, isSelected: _selectedColor == Colors.brown),
-                _ColorButton(color: Colors.white, isSelected: _selectedColor == Colors.white),
-              ].map((btn) {
-                return GestureDetector(
-                  onTap: () => setState(() => _selectedColor = btn.color),
-                  child: Container(
-                    margin: const EdgeInsets.only(right: 8),
-                    child: btn,
-                  ),
-                );
-              }).toList(),
+                _buildColorButton(Colors.black, drawingProvider),
+                _buildColorButton(Colors.red, drawingProvider),
+                _buildColorButton(Colors.blue, drawingProvider),
+                _buildColorButton(Colors.green, drawingProvider),
+                _buildColorButton(Colors.yellow, drawingProvider),
+                _buildColorButton(Colors.purple, drawingProvider),
+                _buildColorButton(Colors.orange, drawingProvider),
+                _buildColorButton(Colors.brown, drawingProvider),
+                _buildColorButton(Colors.white, drawingProvider),
+              ],
             ),
           ),
 
@@ -456,7 +674,10 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
                       value: _brushSize,
                       min: 1,
                       max: 30,
-                      onChanged: (value) => setState(() => _brushSize = value),
+                      onChanged: (value) {
+                        setState(() => _brushSize = value);
+                        drawingProvider.updateStrokeWidth(value);
+                      },
                       activeColor: _selectedColor,
                     ),
                   ],
@@ -466,21 +687,81 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
               // Action Buttons
               Row(
                 children: [
-                  // SAVE BUTTON - NOW ACTIVE
+                  // SAVE BUTTON
                   IconButton(
                     onPressed: () => _saveDrawing(context, drawingProvider),
                     icon: const Icon(Icons.save, color: Colors.white),
                     tooltip: 'Save Drawing',
                   ),
+                  // Add this to the bottom toolbar Row after the Save button
                   IconButton(
                     onPressed: () {
-                      _toggleEraser(drawingProvider);
+                      final drawingProvider = context.read<DrawingProvider>();
+                      final aiProvider = context.read<AIProvider>();
+
+                      if (drawingProvider.strokes.isEmpty) {
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('No drawing to correct!'),
+                            backgroundColor: Colors.orange,
+                          ),
+                        );
+                        return;
+                      }
+
+                      // Get the last drawn stroke
+                      final lastStroke = drawingProvider.getLastStroke();
+                      if (lastStroke != null) {
+                        final strokeIndex = drawingProvider.getLastStrokeIndex();
+                        final correctedPoints = aiProvider.applyManualCorrection(lastStroke);
+
+                        // Apply the correction
+                        drawingProvider.applyAutoCorrection(correctedPoints, strokeIndex);
+
+                        // Show success message
+                        final detectedShape = aiProvider.detectedShape;
+                        ScaffoldMessenger.of(context).showSnackBar(
+                          SnackBar(
+                            content: Text('Auto-corrected to ${detectedShape.isNotEmpty ? detectedShape : "smooth shape"}'),
+                            backgroundColor: Colors.green,
+                            duration: Duration(seconds: 2),
+                          ),
+                        );
+                      }
                     },
-                    icon: const Icon(Icons.cleaning_services, color: Colors.white),
-                    tooltip: 'Erase',
-                  ),
+                    icon: Icon(Icons.auto_awesome, color: Colors.yellow),
+                    tooltip: 'Auto-Correct Last Shape',
+                  ),                  // ERASER BUTTON
                   IconButton(
-                    onPressed: () => drawingProvider.clear(),
+                    onPressed: () {
+                      drawingProvider.toggleEraser();
+                      setState(() {
+                        _selectedColor = drawingProvider.currentColor;
+                        _selectedTool = drawingProvider.currentTool;
+                      });
+
+                      ScaffoldMessenger.of(context).showSnackBar(
+                        SnackBar(
+                          content: Text(
+                            drawingProvider.isErasing ? 'Eraser activated' : 'Drawing mode',
+                          ),
+                          backgroundColor: drawingProvider.isErasing ? Colors.blue : Colors.black,
+                          duration: const Duration(seconds: 1),
+                        ),
+                      );
+                    },
+                    icon: Icon(
+                      drawingProvider.isErasing ? Icons.brush : Icons.cleaning_services,
+                      color: Colors.white,
+                    ),
+                    tooltip: drawingProvider.isErasing ? 'Switch to Brush' : 'Switch to Eraser',
+                  ),
+                  // CLEAR BUTTON
+                  IconButton(
+                    onPressed: () {
+                      final drawingProvider = Provider.of<DrawingProvider>(context, listen: false);
+                      _showClearConfirmationDialog(context, drawingProvider);
+                    },
                     icon: const Icon(Icons.delete_forever, color: Colors.white),
                     tooltip: 'Clear All',
                   ),
@@ -489,6 +770,22 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildColorButton(Color color, DrawingProvider drawingProvider) {
+    return GestureDetector(
+      onTap: () {
+        drawingProvider.updateColor(color);
+        setState(() => _selectedColor = color);
+      },
+      child: Container(
+        margin: const EdgeInsets.only(right: 8),
+        child: _ColorButton(
+          color: color,
+          isSelected: drawingProvider.currentColor == color,
+        ),
       ),
     );
   }
@@ -568,121 +865,171 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
     );
   }
 
-  // Save Drawing Function
-  Future<void> _saveDrawing(BuildContext context, DrawingProvider drawingProvider) async {
-    // Debug: Check if there are points to save
-    print("Debug: Total points to save = ${drawingProvider.points.length}");
-
-    if (drawingProvider.points.isEmpty && _currentStroke.isEmpty) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        const SnackBar(
-          content: Text('No drawing to save! Please draw something first.'),
-          backgroundColor: Colors.orange,
-        ),
-      );
-      return;
-    }
-
-    // Show saving dialog
+  // Helper Methods
+  void _showShapeSelectionDialog(BuildContext context, DrawingProvider drawingProvider) {
     showDialog(
       context: context,
-      barrierDismissible: false,
       builder: (context) => AlertDialog(
-        backgroundColor: Colors.black.withOpacity(0.8),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const CircularProgressIndicator(),
-            const SizedBox(height: 16),
-            const Text(
-              'Saving drawing...',
-              style: TextStyle(color: Colors.white),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Points: ${drawingProvider.points.length}',
-              style: const TextStyle(color: Colors.white70, fontSize: 12),
-            ),
-          ],
+        title: const Text('Select Shape'),
+        backgroundColor: Colors.black.withOpacity(0.9),
+        content: Container(
+          width: 300,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _ShapeOption(
+                icon: Icons.square_outlined,
+                label: 'Rectangle',
+                onTap: () {
+                  drawingProvider.selectShape('rectangle');
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Rectangle mode: Drag to draw rectangle'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+              _ShapeOption(
+                icon: Icons.circle_outlined,
+                label: 'Circle',
+                onTap: () {
+                  drawingProvider.selectShape('circle');
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Circle mode: Drag to draw circle'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+              _ShapeOption(
+                icon: Icons.change_history_outlined,
+                label: 'Triangle',
+                onTap: () {
+                  drawingProvider.selectShape('triangle');
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Triangle mode: Drag to draw triangle'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+              const SizedBox(height: 10),
+              _ShapeOption(
+                icon: Icons.horizontal_rule,
+                label: 'Line',
+                onTap: () {
+                  drawingProvider.selectShape('line');
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(
+                      content: Text('Line mode: Drag to draw straight line'),
+                      duration: Duration(seconds: 2),
+                    ),
+                  );
+                },
+              ),
+            ],
+          ),
         ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel', style: TextStyle(color: Colors.white70)),
+          ),
+        ],
       ),
     );
-
-    try {
-      // Add a small delay to ensure UI is rendered
-      await Future.delayed(const Duration(milliseconds: 100));
-
-      // Capture screenshot with higher pixel ratio for better quality
-      final bytes = await _screenshotController.capture(
-        delay: const Duration(milliseconds: 100),
-        pixelRatio: 2.0, // Higher resolution
-      );
-
-      if (bytes == null) {
-        throw Exception('Failed to capture screenshot - bytes is null');
-      }
-
-      print("Debug: Screenshot captured - ${bytes.length} bytes");
-
-      // Save to gallery
-      final result = await ImageGallerySaverPlus.saveImage(
-        Uint8List.fromList(bytes),
-        quality: 100,
-        name: 'ai_drawing_${DateTime.now().millisecondsSinceEpoch}',
-      );
-
-      print("Debug: Save result = $result");
-
-      if (result['isSuccess'] != true) {
-        throw Exception('Failed to save to gallery: ${result['errorMessage']}');
-      }
-
-      // Close dialog
-      if (mounted) Navigator.of(context).pop();
-
-      // Show success message
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: const Text('Drawing saved successfully to gallery!'),
-          backgroundColor: Colors.green,
-          action: SnackBarAction(
-            label: 'OK',
-            onPressed: () {},
-            textColor: Colors.white,
-          ),
-          duration: const Duration(seconds: 3),
-        ),
-      );
-
-    } catch (e) {
-      // Close dialog
-      if (mounted) Navigator.of(context).pop();
-
-      // Show error message
-      print("Error saving: $e");
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('Failed to save: ${e.toString()}'),
-          backgroundColor: Colors.red,
-          duration: const Duration(seconds: 3),
-        ),
-      );
-    }
   }
 
-  void _toggleEraser(DrawingProvider drawingProvider) {
-    drawingProvider.toggleEraser();
-    setState(() {
-      _selectedColor = drawingProvider.isErasing ? Colors.white : Colors.black;
-    });
+  void _showTextInputDialog(BuildContext context, DrawingProvider drawingProvider) {
+    final textController = TextEditingController();
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(
-          drawingProvider.isErasing ? 'Eraser activated' : 'Drawing mode',
-        ),
-        backgroundColor: drawingProvider.isErasing ? Colors.blue : Colors.black,
-        duration: const Duration(seconds: 1),
+    showDialog(
+      context: context,
+      builder: (context) {
+        // Calculate position for text (center of screen)
+        final screenSize = MediaQuery.of(context).size;
+        final position = Offset(
+          screenSize.width / 2 - 100,
+          screenSize.height / 2 - 50,
+        );
+
+        return AlertDialog(
+          title: const Text('Add Text'),
+          content: SizedBox(
+            width: 300,
+            child: TextField(
+              controller: textController,
+              decoration: const InputDecoration(
+                hintText: 'Enter your text here',
+                border: OutlineInputBorder(),
+              ),
+              autofocus: true,
+            ),
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+            ElevatedButton(
+              onPressed: () {
+                if (textController.text.trim().isNotEmpty) {
+                  drawingProvider.addText(textController.text.trim(), position);
+                  Navigator.pop(context);
+                  ScaffoldMessenger.of(context).showSnackBar(
+                    SnackBar(
+                      content: Text('Text added: "${textController.text}"'),
+                      duration: const Duration(seconds: 2),
+                    ),
+                  );
+                }
+              },
+              child: const Text('Add Text'),
+            ),
+          ],
+        );
+      },
+    );
+  }
+
+  void _showClearConfirmationDialog(BuildContext context, DrawingProvider drawingProvider) {
+    showDialog(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Clear Canvas'),
+        content: const Text('Are you sure you want to clear the entire canvas?'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () {
+              drawingProvider.clear();
+              Navigator.pop(context);
+              ScaffoldMessenger.of(context).showSnackBar(
+                const SnackBar(
+                  content: Text('Canvas cleared successfully'),
+                  duration: const Duration(seconds: 1),
+                ),
+              );
+            },
+            child: const Text('Clear All'),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: Colors.red,
+              foregroundColor: Colors.white,
+            ),
+          ),
+        ],
       ),
     );
   }
@@ -702,8 +1049,284 @@ class _CompleteCanvasScreenState extends State<CompleteCanvasScreen> {
         return 'Keep drawing to see AI suggestions';
     }
   }
+
+  // Save Drawing Function
+  Future<void> _saveDrawing(BuildContext context, DrawingProvider drawingProvider) async {
+    final bool hasStrokes = drawingProvider.strokes.isNotEmpty ||
+        drawingProvider.currentStroke.isNotEmpty ||
+        drawingProvider.texts.isNotEmpty;
+
+    print("Debug: Total strokes to save = ${drawingProvider.strokes.length}");
+    print("Debug: Current stroke points = ${drawingProvider.currentStroke.length}");
+    print("Debug: Texts to save = ${drawingProvider.texts.length}");
+
+    if (!hasStrokes) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('No drawing to save! Please draw something first.'),
+          backgroundColor: Colors.orange,
+        ),
+      );
+      return;
+    }
+
+    showDialog(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        backgroundColor: Colors.black.withOpacity(0.8),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 16),
+            const Text(
+              'Saving drawing...',
+              style: TextStyle(color: Colors.white),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              'Strokes: ${drawingProvider.strokes.length}, Texts: ${drawingProvider.texts.length}',
+              style: const TextStyle(color: Colors.white70, fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+    );
+
+    try {
+      await Future.delayed(const Duration(milliseconds: 100));
+      final bytes = await _screenshotController.capture(
+        delay: const Duration(milliseconds: 100),
+        pixelRatio: 2.0,
+      );
+
+      if (bytes == null) {
+        throw Exception('Failed to capture screenshot');
+      }
+
+      print("Debug: Screenshot captured - ${bytes.length} bytes");
+
+      final result = await ImageGallerySaverPlus.saveImage(
+        Uint8List.fromList(bytes),
+        quality: 100,
+        name: 'ai_drawing_${DateTime.now().millisecondsSinceEpoch}',
+      );
+
+      print("Debug: Save result = $result");
+
+      if (result['isSuccess'] != true) {
+        throw Exception('Failed to save to gallery: ${result['errorMessage']}');
+      }
+
+      if (mounted) Navigator.of(context).pop();
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: const Text('Drawing saved successfully to gallery!'),
+          backgroundColor: Colors.green,
+          action: SnackBarAction(
+            label: 'OK',
+            onPressed: () {},
+            textColor: Colors.white,
+          ),
+          duration: const Duration(seconds: 3),
+        ),
+      );
+
+    } catch (e) {
+      if (mounted) Navigator.of(context).pop();
+      print("Error saving: $e");
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('Failed to save: ${e.toString()}'),
+          backgroundColor: Colors.red,
+          duration: const Duration(seconds: 3),
+        ),
+      );
+    }
+  }
 }
 
+// Custom Painters
+class _AICanvasPainter extends CustomPainter {
+  final List<List<Offset>> strokes;
+  final List<Offset> currentStroke;
+  final List<Color> strokeColors;
+  final List<double> strokeWidths;
+  final bool showAIOverlay;
+  final AIProvider aiProvider;
+  final Color selectedColor;
+  final double brushSize;
+  final List<Offset> shapePreviewPoints;
+  final String selectedShape;
+  final bool isDrawingShape;
+  final List<TextData> texts;
+
+  _AICanvasPainter({
+    required this.strokes,
+    required this.currentStroke,
+    required this.strokeColors,
+    required this.strokeWidths,
+    required this.showAIOverlay,
+    required this.aiProvider,
+    required this.selectedColor,
+    required this.brushSize,
+    required this.shapePreviewPoints,
+    required this.selectedShape,
+    required this.isDrawingShape,
+    required this.texts,
+  });
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    // Draw each stroke separately
+    for (int i = 0; i < strokes.length; i++) {
+      final stroke = strokes[i];
+      if (stroke.length < 2) continue;
+
+      final paint = Paint()
+        ..color = i < strokeColors.length ? strokeColors[i] : Colors.black
+        ..strokeWidth = i < strokeWidths.length ? strokeWidths[i] : 5.0
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke
+        ..isAntiAlias = true;
+
+      final path = Path();
+      path.moveTo(stroke.first.dx, stroke.first.dy);
+
+      for (int j = 1; j < stroke.length; j++) {
+        path.lineTo(stroke[j].dx, stroke[j].dy);
+      }
+
+      canvas.drawPath(path, paint);
+    }
+
+    // Draw current stroke (in progress)
+    if (currentStroke.length > 1) {
+      final currentPaint = Paint()
+        ..color = selectedColor
+        ..strokeWidth = brushSize
+        ..strokeCap = StrokeCap.round
+        ..strokeJoin = StrokeJoin.round
+        ..style = PaintingStyle.stroke
+        ..isAntiAlias = true;
+
+      final currentPath = Path();
+      currentPath.moveTo(currentStroke.first.dx, currentStroke.first.dy);
+
+      for (int i = 1; i < currentStroke.length; i++) {
+        currentPath.lineTo(currentStroke[i].dx, currentStroke[i].dy);
+      }
+
+      canvas.drawPath(currentPath, currentPaint);
+    }
+
+    // Draw shape preview
+    if (isDrawingShape && shapePreviewPoints.length >= 2) {
+      final previewPaint = Paint()
+        ..color = selectedColor.withOpacity(0.5)
+        ..strokeWidth = brushSize
+        ..strokeCap = StrokeCap.round
+        ..style = PaintingStyle.stroke
+        ..isAntiAlias = true;
+
+      final previewPath = Path();
+      final start = shapePreviewPoints[0];
+      final end = shapePreviewPoints[1];
+
+      switch (selectedShape) {
+        case 'rectangle':
+          previewPath.moveTo(start.dx, start.dy);
+          previewPath.lineTo(end.dx, start.dy);
+          previewPath.lineTo(end.dx, end.dy);
+          previewPath.lineTo(start.dx, end.dy);
+          previewPath.close();
+          break;
+        case 'circle':
+        // Fixed single circle drawing
+          final center = Offset(
+            (start.dx + end.dx) / 2,
+            (start.dy + end.dy) / 2,
+          );
+          final radius = min((end.dx - start.dx).abs(), (end.dy - start.dy).abs()) / 2;
+          previewPath.addOval(Rect.fromCircle(center: center, radius: radius));
+          break;
+        case 'triangle':
+          final centerX = (start.dx + end.dx) / 2;
+          previewPath.moveTo(centerX, start.dy);
+          previewPath.lineTo(end.dx, end.dy);
+          previewPath.lineTo(start.dx, end.dy);
+          previewPath.close();
+          break;
+        case 'line':
+          previewPath.moveTo(start.dx, start.dy);
+          previewPath.lineTo(end.dx, end.dy);
+          break;
+      }
+
+      canvas.drawPath(previewPath, previewPaint);
+    }
+
+    // Draw texts
+    for (final textData in texts) {
+      final textPainter = TextPainter(
+        text: TextSpan(
+          text: textData.text,
+          style: TextStyle(
+            color: textData.color,
+            fontSize: textData.fontSize,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+        textDirection: TextDirection.ltr,
+      );
+      textPainter.layout();
+      textPainter.paint(canvas, textData.position);
+    }
+
+    // Draw AI detection boxes
+    if (showAIOverlay && aiProvider.detectedShapes.isNotEmpty) {
+      final recentShape = aiProvider.detectedShapes.last;
+
+      if (recentShape.bounds.width > 0 && recentShape.bounds.height > 0) {
+        final detectionPaint = Paint()
+          ..color = Colors.blue.withOpacity(0.3)
+          ..strokeWidth = 2
+          ..style = PaintingStyle.stroke;
+
+        canvas.drawRect(recentShape.bounds, detectionPaint);
+
+        final textPainter = TextPainter(
+          text: TextSpan(
+            text: '${recentShape.shape}\n${recentShape.object}',
+            style: const TextStyle(
+              color: Colors.blue,
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              backgroundColor: Colors.black,
+            ),
+          ),
+          textDirection: TextDirection.ltr,
+        );
+        textPainter.layout();
+        textPainter.paint(
+          canvas,
+          Offset(
+            recentShape.bounds.left,
+            recentShape.bounds.top - 30,
+          ),
+        );
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+}
+
+// Custom Widgets
 class _ToolButton extends StatelessWidget {
   final IconData icon;
   final String label;
@@ -719,20 +1342,32 @@ class _ToolButton extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      children: [
-        IconButton(
-          onPressed: onTap,
-          icon: Icon(icon, color: isSelected ? Colors.blue : Colors.white),
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        margin: const EdgeInsets.only(bottom: 8),
+        child: Column(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                color: isSelected ? Colors.blue.withOpacity(0.3) : Colors.transparent,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Icon(icon, color: isSelected ? Colors.blue : Colors.white),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              style: TextStyle(
+                color: isSelected ? Colors.blue : Colors.white70,
+                fontSize: 10,
+              ),
+            ),
+          ],
         ),
-        Text(
-          label,
-          style: TextStyle(
-            color: isSelected ? Colors.blue : Colors.white70,
-            fontSize: 10,
-          ),
-        ),
-      ],
+      ),
     );
   }
 }
@@ -769,105 +1404,41 @@ class _ColorButton extends StatelessWidget {
   }
 }
 
-class _AICanvasPainter extends CustomPainter {
-  final List<Offset> points;
-  final List<Offset> currentStroke;
-  final bool showAIOverlay;
-  final AIProvider aiProvider;
-  final Color selectedColor;
-  final double brushSize;
+class _ShapeOption extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
 
-  _AICanvasPainter({
-    required this.points,
-    required this.currentStroke,
-    required this.showAIOverlay,
-    required this.aiProvider,
-    required this.selectedColor,
-    required this.brushSize,
+  const _ShapeOption({
+    required this.icon,
+    required this.label,
+    required this.onTap,
   });
 
   @override
-  void paint(Canvas canvas, Size size) {
-    // Draw background (transparent so white shows through)
-    final backgroundPaint = Paint()..color = Colors.transparent;
-    canvas.drawRect(Rect.fromLTWH(0, 0, size.width, size.height), backgroundPaint);
-
-    // Draw all completed points
-    if (points.isNotEmpty) {
-      final paint = Paint()
-        ..color = selectedColor
-        ..strokeWidth = brushSize
-        ..strokeCap = StrokeCap.round
-        ..style = PaintingStyle.stroke
-        ..isAntiAlias = true;
-
-      // Use Path for smoother lines
-      if (points.length > 1) {
-        final path = Path();
-        path.moveTo(points.first.dx, points.first.dy);
-
-        for (int i = 1; i < points.length; i++) {
-          path.lineTo(points[i].dx, points[i].dy);
-        }
-
-        canvas.drawPath(path, paint);
-      }
-    }
-
-    // Draw current stroke
-    if (currentStroke.length > 1) {
-      final currentPaint = Paint()
-        ..color = selectedColor
-        ..strokeWidth = brushSize
-        ..strokeCap = StrokeCap.round
-        ..style = PaintingStyle.stroke
-        ..isAntiAlias = true;
-
-      final currentPath = Path();
-      currentPath.moveTo(currentStroke.first.dx, currentStroke.first.dy);
-
-      for (int i = 1; i < currentStroke.length; i++) {
-        currentPath.lineTo(currentStroke[i].dx, currentStroke[i].dy);
-      }
-
-      canvas.drawPath(currentPath, currentPaint);
-    }
-
-    // Draw AI detection boxes
-    if (showAIOverlay && aiProvider.detectedShapes.isNotEmpty) {
-      final recentShape = aiProvider.detectedShapes.last;
-
-      final detectionPaint = Paint()
-        ..color = Colors.blue.withOpacity(0.3)
-        ..strokeWidth = 2
-        ..style = PaintingStyle.stroke;
-
-      // Draw bounding box
-      canvas.drawRect(recentShape.bounds, detectionPaint);
-
-      // Draw shape label
-      final textPainter = TextPainter(
-        text: TextSpan(
-          text: '${recentShape.shape}\n${recentShape.object}',
-          style: const TextStyle(
-            color: Colors.blue,
-            fontSize: 12,
-            fontWeight: FontWeight.bold,
-          ),
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: Colors.grey[900],
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(color: Colors.white30),
         ),
-        textDirection: TextDirection.ltr,
-      );
-      textPainter.layout();
-      textPainter.paint(
-        canvas,
-        Offset(
-          recentShape.bounds.left,
-          recentShape.bounds.top - 30,
+        child: Row(
+          children: [
+            Icon(icon, color: Colors.white, size: 24),
+            const SizedBox(width: 12),
+            Text(
+              label,
+              style: const TextStyle(color: Colors.white, fontSize: 16),
+            ),
+            const Spacer(),
+            const Icon(Icons.chevron_right, color: Colors.white70),
+          ],
         ),
-      );
-    }
+      ),
+    );
   }
-
-  @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
 }

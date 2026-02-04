@@ -46,12 +46,12 @@ flutter:
   uses-material-design: true
 
   assets:
-    - assets/backgroud/beach.jpg
-    - assets/backgroud/forest.jpg
-    - assets/backgroud/garden.jpg
-    - assets/backgroud/kitchen.jpg
-    - assets/backgroud/living_room.jpg
-    - assets/backgroud/office.jpg
-    - assets/backgroud/sky.jpg
+    - assets/background/beach.jpg
+    - assets/background/forest.jpg
+    - assets/background/garden.jpg
+    - assets/background/kitchen.jpg
+    - assets/background/living_room.jpg
+    - assets/background/office.jpg
+    - assets/background/sky.jpg
     - assets/images/canvas_texture.png
     - assets/animations/paint_brush.json

@@ -1,11 +1,12 @@
+import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
-import 'dart:ui';
 import 'dart:typed_data';
-import 'dart:convert'; // <-- ADD THIS IMPORT for json.encode/json.decode
+import 'dart:ui';
+
 import 'package:flutter/material.dart';
-// Use the correct import based on your pubspec.yaml choice
-import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart'; // If you kept this
-// OR use: import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
+import 'package:flutter/services.dart';
+import 'package:image_gallery_saver_plus/image_gallery_saver_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:screenshot/screenshot.dart';
 
@@ -39,31 +40,69 @@ class AirDrawingPoint {
   );
 }
 
-/// Handles the core state for air drawing.
+/// Background types for air drawing
+enum BackgroundType {
+  none,
+  indoor,
+  outdoor,
+  custom,
+}
+
+/// Background image data class
+class BackgroundImage {
+  final String name;
+  final String assetPath;
+  final BackgroundType type;
+  Uint8List? imageBytes;
+
+  BackgroundImage({
+    required this.name,
+    required this.assetPath,
+    required this.type,
+    this.imageBytes,
+  });
+}
+
+/// Handles the core state for air drawing with background support.
 class AirDrawingProvider extends ChangeNotifier {
-  // Drawing state
+  // ========== DRAWING STATE ==========
   List<AirDrawingPoint> _points = [];
   List<List<AirDrawingPoint>> _drawingHistory = [];
+  List<List<AirDrawingPoint>> _redoHistory = []; // NEW: Redo history
   Color _selectedColor = Colors.blueAccent;
   double _strokeWidth = 8.0;
   bool _isDrawing = false;
 
-  // Hand tracking & cursor state
+  // ========== HAND TRACKING STATE ==========
   Offset? _currentCursorPosition;
   List<Offset> _handLandmarks = [];
   bool _handDetected = false;
 
-  // UI State
+  // ========== UI STATE ==========
   bool _showHandSkeleton = false;
   bool _showCursor = true;
   double _canvasOpacity = 0.85;
   Color _cursorColor = Colors.yellow;
   double _cursorSize = 12.0;
 
-  // Screenshot controller for saving
+  // ========== BACKGROUND STATE ==========
+  BackgroundImage _selectedBackground = BackgroundImage(
+    name: 'None',
+    assetPath: '',
+    type: BackgroundType.none,
+  );
+  List<BackgroundImage> _backgrounds = [];
+  ImageProvider? _backgroundImageProvider;
+
+  // ========== UTILITIES ==========
   final ScreenshotController _screenshotController = ScreenshotController();
 
-  // Getters
+  // ========== CONSTRUCTOR ==========
+  AirDrawingProvider() {
+    _initializeBackgrounds();
+  }
+
+  // ========== GETTERS ==========
   List<AirDrawingPoint> get points => _points;
   Color get selectedColor => _selectedColor;
   double get strokeWidth => _strokeWidth;
@@ -77,6 +116,13 @@ class AirDrawingProvider extends ChangeNotifier {
   Color get cursorColor => _cursorColor;
   double get cursorSize => _cursorSize;
   ScreenshotController get screenshotController => _screenshotController;
+  BackgroundImage get selectedBackground => _selectedBackground;
+  List<BackgroundImage> get backgrounds => _backgrounds;
+  ImageProvider? get backgroundImageProvider => _backgroundImageProvider;
+
+  // NEW: Redo availability getter
+  bool get canRedo => _redoHistory.isNotEmpty;
+  bool get canUndo => _drawingHistory.isNotEmpty;
 
   // ========== HAND TRACKING METHODS ==========
   void updateHandData(List<Offset> newLandmarks) {
@@ -94,18 +140,38 @@ class AirDrawingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void updateCursorPosition(Offset? position) {
+    _currentCursorPosition = position;
+    notifyListeners();
+  }
+
   // ========== DRAWING CONTROL METHODS ==========
   void startDrawing() {
     if (_handDetected && _currentCursorPosition != null) {
       _isDrawing = true;
-      _drawingHistory.add([..._points]);
+      _saveToHistory(); // Save current state before starting new drawing
       _addDrawingPoint(_currentCursorPosition!);
       notifyListeners();
     }
   }
 
+  void startDrawingAt(Offset position) {
+    _isDrawing = true;
+    _saveToHistory(); // Save current state before starting new drawing
+    _addDrawingPoint(position);
+    notifyListeners();
+  }
+
   void stopDrawing() {
     _isDrawing = false;
+    notifyListeners();
+  }
+
+  void stopDrawingAt(Offset position) {
+    _isDrawing = false;
+    if (_currentCursorPosition != null) {
+      _addDrawingPoint(_currentCursorPosition!);
+    }
     notifyListeners();
   }
 
@@ -123,18 +189,47 @@ class AirDrawingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
+  void addPoint(Offset point) {
+    _addDrawingPoint(point);
+  }
+
   void clearDrawing() {
-    _drawingHistory.add([..._points]);
+    _saveToHistory(); // Save current drawing before clearing
     _points.clear();
     _isDrawing = false;
+    _redoHistory.clear(); // Clear redo history when clearing drawing
     notifyListeners();
   }
 
   void undo() {
     if (_drawingHistory.isNotEmpty) {
+      // Save current state to redo history
+      _redoHistory.add([..._points]);
+
+      // Restore previous state from undo history
       _points = _drawingHistory.removeLast();
+
       notifyListeners();
     }
+  }
+
+  // NEW: Redo method
+  void redo() {
+    if (_redoHistory.isNotEmpty) {
+      // Save current state to undo history
+      _drawingHistory.add([..._points]);
+
+      // Restore state from redo history
+      _points = _redoHistory.removeLast();
+
+      notifyListeners();
+    }
+  }
+
+  // Helper method to save current state to history
+  void _saveToHistory() {
+    _drawingHistory.add([..._points]);
+    _redoHistory.clear(); // Clear redo history when new action is performed
   }
 
   void updateColor(Color color) {
@@ -147,7 +242,76 @@ class AirDrawingProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // ========== UI SETTINGS ==========
+  // ========== BACKGROUND METHODS ==========
+  Future<void> _initializeBackgrounds() async {
+    _backgrounds = [
+      BackgroundImage(name: 'None', assetPath: '', type: BackgroundType.none),
+      BackgroundImage(
+          name: 'Living Room',
+          assetPath: 'assets/backgrounds/living_room.jpg',
+          type: BackgroundType.indoor),
+      BackgroundImage(
+          name: 'Kitchen',
+          assetPath: 'assets/backgrounds/kitchen.jpg',
+          type: BackgroundType.indoor),
+      BackgroundImage(
+          name: 'Office',
+          assetPath: 'assets/backgrounds/office.jpg',
+          type: BackgroundType.indoor),
+      BackgroundImage(
+          name: 'Sky',
+          assetPath: 'assets/backgrounds/sky.jpg',
+          type: BackgroundType.outdoor),
+      BackgroundImage(
+          name: 'Garden',
+          assetPath: 'assets/backgrounds/garden.jpg',
+          type: BackgroundType.outdoor),
+      BackgroundImage(
+          name: 'Beach',
+          assetPath: 'assets/backgrounds/beach.jpg',
+          type: BackgroundType.outdoor),
+      BackgroundImage(
+          name: 'Forest',
+          assetPath: 'assets/backgrounds/forest.jpg',
+          type: BackgroundType.outdoor),
+    ];
+
+    // Preload background images
+    for (var bg in _backgrounds) {
+      if (bg.assetPath.isNotEmpty) {
+        try {
+          final byteData = await rootBundle.load(bg.assetPath);
+          bg.imageBytes = byteData.buffer.asUint8List();
+        } catch (e) {
+          debugPrint('Failed to load background ${bg.name}: $e');
+        }
+      }
+    }
+    notifyListeners();
+  }
+
+  void selectBackground(BackgroundImage background) {
+    _selectedBackground = background;
+
+    if (background.assetPath.isNotEmpty && background.imageBytes != null) {
+      _backgroundImageProvider = MemoryImage(background.imageBytes!);
+    } else {
+      _backgroundImageProvider = null;
+    }
+    notifyListeners();
+  }
+
+  void clearBackground() {
+    _selectedBackground = BackgroundImage(
+      name: 'None',
+      assetPath: '',
+      type: BackgroundType.none,
+    );
+    _backgroundImageProvider = null;
+    notifyListeners();
+  }
+
+  // ========== UI SETTINGS METHODS ==========
   void toggleHandSkeleton() {
     _showHandSkeleton = !_showHandSkeleton;
     notifyListeners();
@@ -180,8 +344,6 @@ class AirDrawingProvider extends ChangeNotifier {
       final fileName = 'air_drawing_${DateTime.now().millisecondsSinceEpoch}.png';
       final filePath = '${directory.path}/$fileName';
 
-      // REMOVED THE DUPLICATE METHOD. This is the only definition.
-      // Updated for screenshot ^3.0.0: capture() requires a 'delay' parameter.
       final bytes = await _screenshotController.capture(delay: Duration.zero);
       if (bytes == null) throw Exception('Failed to capture screenshot');
 
@@ -200,7 +362,6 @@ class AirDrawingProvider extends ChangeNotifier {
       final bytes = await _screenshotController.capture(delay: Duration.zero);
       if (bytes == null) return false;
 
-      // Use ImageGallerySaverPlus instead of ImageGallerySaver
       final result = await ImageGallerySaverPlus.saveImage(
         Uint8List.fromList(bytes),
         quality: 100,
@@ -227,7 +388,7 @@ class AirDrawingProvider extends ChangeNotifier {
       final directory = await getApplicationDocumentsDirectory();
       final fileName = 'air_drawing_${DateTime.now().millisecondsSinceEpoch}.json';
       final filePath = '${directory.path}/$fileName';
-      // The 'json' variable from dart:convert is now recognized.
+
       await File(filePath).writeAsString(json.encode(jsonData));
       return filePath;
     } catch (e) {
@@ -239,10 +400,9 @@ class AirDrawingProvider extends ChangeNotifier {
   Future<void> loadDrawingFromJson(String filePath) async {
     try {
       final file = File(filePath);
-      // The 'json' variable from dart:convert is now recognized.
       final jsonData = json.decode(await file.readAsString());
 
-      _drawingHistory.add([..._points]);
+      _saveToHistory(); // Save current state before loading
       _points = (jsonData['points'] as List)
           .map((p) => AirDrawingPoint.fromJson(p))
           .toList();

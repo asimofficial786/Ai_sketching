@@ -1,32 +1,70 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 
+/// Shape data detected by AI
+class ShapeData {
+  final String shape;
+  final String object;
+  final Rect bounds;
+  final List<Offset> points;
+  final DateTime timestamp;
+
+  ShapeData({
+    required this.shape,
+    required this.object,
+    required this.bounds,
+    required this.points,
+    required this.timestamp,
+  });
+}
+
+/// Background type enum
+enum BackgroundType {
+  none,
+  indoor,
+  outdoor,
+}
+
+/// Background data class
+class Background {
+  final String name;
+  final String path;
+  final BackgroundType type;
+
+  Background({
+    required this.name,
+    required this.path,
+    required this.type,
+  });
+}
+
+/// AI Provider for drawing assistance and shape detection
 class AIProvider extends ChangeNotifier {
-  // AI Correction Settings
-  bool _autoCorrectionEnabled = true;
+  // ========== AI SETTINGS ==========
+  bool _autoCorrectionEnabled = false;
   bool _showDetectionBoxes = true;
   double _correctionStrength = 0.7;
   String _detectedShape = '';
   String _classifiedObject = '';
   String _selectedBackground = 'none';
 
-
+  // ========== DETECTION STATE ==========
   final List<ShapeData> _detectedShapes = [];
   List<Offset> _currentPoints = [];
 
-
+  // ========== BACKGROUND DATA ==========
   final List<Background> _backgrounds = [
     Background(name: 'None', path: '', type: BackgroundType.none),
-    Background(name: 'Living Room Wall', path: 'assets/backgroud/living_room.jpg', type: BackgroundType.indoor),
-    Background(name: 'Kitchen', path: 'assets/backgroud/kitchen.jpg', type: BackgroundType.indoor),
-    Background(name: 'Office Desk', path: 'assets/backgroud/office.jpg', type: BackgroundType.indoor),
-    Background(name: 'Sky', path: 'assets/backgroud/sky.jpg', type: BackgroundType.outdoor),
-    Background(name: 'Garden', path: 'assets/backgroud/garden.jpg', type: BackgroundType.outdoor),
-    Background(name: 'Beach', path: 'assets/backgroud/beach.jpg', type: BackgroundType.outdoor),
-    Background(name: 'Forest', path: 'assets/backgroud/forest.jpg', type: BackgroundType.outdoor),
+    Background(name: 'Living Room Wall', path: 'assets/background/living_room.jpg', type: BackgroundType.indoor),
+    Background(name: 'Kitchen', path: 'assets/background/kitchen.jpg', type: BackgroundType.indoor),
+    Background(name: 'Office Desk', path: 'assets/background/office.jpg', type: BackgroundType.indoor),
+    Background(name: 'Sky', path: 'assets/background/sky.jpg', type: BackgroundType.outdoor),
+    Background(name: 'Garden', path: 'assets/background/garden.jpg', type: BackgroundType.outdoor),
+    Background(name: 'Beach', path: 'assets/background/beach.jpg', type: BackgroundType.outdoor),
+    Background(name: 'Forest', path: 'assets/background/forest.jpg', type: BackgroundType.outdoor),
   ];
 
-
+  // ========== GETTERS ==========
   bool get autoCorrectionEnabled => _autoCorrectionEnabled;
   bool get showDetectionBoxes => _showDetectionBoxes;
   double get correctionStrength => _correctionStrength;
@@ -36,7 +74,7 @@ class AIProvider extends ChangeNotifier {
   List<ShapeData> get detectedShapes => _detectedShapes;
   List<Background> get backgrounds => _backgrounds;
 
-  // Toggle AI Correction
+  // ========== AI CONTROL METHODS ==========
   void toggleAutoCorrection() {
     _autoCorrectionEnabled = !_autoCorrectionEnabled;
     notifyListeners();
@@ -52,9 +90,9 @@ class AIProvider extends ChangeNotifier {
     notifyListeners();
   }
 
-  // Shape Detection & Classification
-  void analyzePoints(List<Offset> points) {
-    if (points.length < 3) return;
+  // ========== SHAPE DETECTION & CLASSIFICATION ==========
+  String analyzePoints(List<Offset> points) {
+    if (points.length < 3) return '';
 
     _currentPoints = List.from(points);
 
@@ -77,12 +115,70 @@ class AIProvider extends ChangeNotifier {
     }
 
     notifyListeners();
+    return shape;
   }
 
+  // ========== CORRECTION METHODS ==========
+  List<Offset> applyManualCorrection(List<Offset> points) {
+    if (points.length < 2) return points;
+
+    final shape = _detectBasicShape(points);
+
+    switch (shape) {
+      case 'circle':
+        return _correctToCircle(points);
+      case 'triangle':
+        return _correctToTriangle(points);
+      case 'square':
+      case 'rectangle':
+        return _correctToRectangle(points);
+      case 'line':
+        return _correctToLine(points);
+      default:
+        return _smoothPoints(points);
+    }
+  }
+
+  List<Offset> applyAutoCorrection(List<Offset> points) {
+    if (!_autoCorrectionEnabled || points.length < 3) return points;
+
+    final shape = _detectBasicShape(points);
+
+    switch (shape) {
+      case 'circle':
+        return _correctToCircle(points);
+      case 'triangle':
+        return _correctToTriangle(points);
+      case 'square':
+      case 'rectangle':
+        return _correctToRectangle(points);
+      case 'line':
+        return _correctToLine(points);
+      default:
+        return _smoothPoints(points);
+    }
+  }
+
+  // ========== BACKGROUND MANAGEMENT ==========
+  void selectBackground(String backgroundName) {
+    _selectedBackground = backgroundName;
+    notifyListeners();
+  }
+
+  // ========== CLEAR DETECTIONS ==========
+  void clearDetections() {
+    _detectedShapes.clear();
+    _detectedShape = '';
+    _classifiedObject = '';
+    notifyListeners();
+  }
+
+  // ========== PRIVATE HELPER METHODS ==========
+
+  // Shape Detection Logic
   String _detectBasicShape(List<Offset> points) {
     if (points.length < 3) return '';
 
-    // Calculate shape properties
     final bounds = _calculateBoundingBox(points);
     final width = bounds.right - bounds.left;
     final height = bounds.bottom - bounds.top;
@@ -165,33 +261,7 @@ class AIProvider extends ChangeNotifier {
     }
   }
 
-  // Background Management
-  void selectBackground(String backgroundName) {
-    _selectedBackground = backgroundName;
-    notifyListeners();
-  }
-
-  // Auto-correction for points
-  List<Offset> applyCorrection(List<Offset> points) {
-    if (!_autoCorrectionEnabled || points.length < 3) return points;
-
-    final shape = _detectBasicShape(points);
-
-    switch (shape) {
-      case 'circle':
-        return _correctToCircle(points);
-      case 'triangle':
-        return _correctToTriangle(points);
-      case 'square':
-      case 'rectangle':
-        return _correctToRectangle(points);
-      case 'line':
-        return _correctToLine(points);
-      default:
-        return _smoothPoints(points);
-    }
-  }
-
+  // Shape Correction Methods
   List<Offset> _correctToCircle(List<Offset> points) {
     final bounds = _calculateBoundingBox(points);
     final center = Offset(
@@ -286,7 +356,7 @@ class AIProvider extends ChangeNotifier {
     return corrected; // In production, implement proper blending
   }
 
-  // Helper methods for shape analysis
+  // Geometry Helper Methods
   Rect _calculateBoundingBox(List<Offset> points) {
     if (points.isEmpty) return Rect.zero;
 
@@ -449,46 +519,4 @@ class AIProvider extends ChangeNotifier {
 
     return atan2(dy, dx) * 180 / pi;
   }
-
-  // Clear detections
-  void clearDetections() {
-    _detectedShapes.clear();
-    _detectedShape = '';
-    _classifiedObject = '';
-    notifyListeners();
-  }
-}
-
-class ShapeData {
-  final String shape;
-  final String object;
-  final Rect bounds;
-  final List<Offset> points;
-  final DateTime timestamp;
-
-  ShapeData({
-    required this.shape,
-    required this.object,
-    required this.bounds,
-    required this.points,
-    required this.timestamp,
-  });
-}
-
-class Background {
-  final String name;
-  final String path;
-  final BackgroundType type;
-
-  Background({
-    required this.name,
-    required this.path,
-    required this.type,
-  });
-}
-
-enum BackgroundType {
-  none,
-  indoor,
-  outdoor,
 }

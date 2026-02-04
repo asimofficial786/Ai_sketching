@@ -6,6 +6,7 @@ import 'package:camera/camera.dart';
 import 'package:hand_landmarker/hand_landmarker.dart';
 import 'package:confetti/confetti.dart';
 import 'package:screenshot/screenshot.dart';
+import 'package:permission_handler/permission_handler.dart'; // Add this import
 
 import '../../providers/air_drawing_provider.dart';
 import '../../widgets/reusable/tool_button.dart';
@@ -22,6 +23,7 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
   HandLandmarkerPlugin? _handPlugin;
   bool _isCameraReady = false;
   bool _isDetecting = false;
+  bool _hasCameraPermission = false; // Add permission tracking
   late ConfettiController _confettiController;
   final _key = GlobalKey();
 
@@ -34,6 +36,19 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
 
   Future<void> _initializeCameraAndPlugin() async {
     try {
+      // Check camera permission
+      final cameraStatus = await Permission.camera.status;
+      if (!cameraStatus.isGranted) {
+        final status = await Permission.camera.request();
+        if (!status.isGranted) {
+          _showErrorSnackbar('Camera permission is required for air drawing');
+          setState(() => _hasCameraPermission = false);
+          return;
+        }
+      }
+
+      setState(() => _hasCameraPermission = true);
+
       final cameras = await availableCameras();
       final frontCamera = cameras.firstWhere(
             (cam) => cam.lensDirection == CameraLensDirection.front,
@@ -42,33 +57,35 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
 
       _cameraController = CameraController(
         frontCamera,
-        ResolutionPreset.high,
+        ResolutionPreset.medium, // Changed from high to medium for better performance
         enableAudio: false,
+        imageFormatGroup: ImageFormatGroup.yuv420, // Add this for compatibility
       );
       await _cameraController.initialize();
 
-      _handPlugin = HandLandmarkerPlugin.create(
-        numHands: 1,
-        minHandDetectionConfidence: 0.7,
-        delegate: HandLandmarkerDelegate.gpu,
-      );
+      // ✅ CORRECT FOR v2.1.2: create() takes NO arguments
+      _handPlugin = HandLandmarkerPlugin.create();
+
+      debugPrint('HandLandmarkerPlugin created successfully');
 
       await _cameraController.startImageStream(_processCameraFrame);
 
       if (mounted) {
         setState(() => _isCameraReady = true);
+        _showSuccessSnackbar('Air Drawing ready! Show your hand to the camera.');
       }
     } catch (e) {
-      debugPrint('Initialization failed: $e');
-      _showErrorSnackbar('Camera initialization failed');
+      debugPrint('Camera initialization failed: $e');
+      _showErrorSnackbar('Camera initialization failed: ${e.toString()}');
     }
   }
 
   Future<void> _processCameraFrame(CameraImage image) async {
-    if (!_isCameraReady || _isDetecting || _handPlugin == null) return;
+    if (!_isCameraReady || _isDetecting || !_hasCameraPermission || _handPlugin == null) return;
     _isDetecting = true;
 
     try {
+      // ✅ For v2.1.2, the detect method should work like this
       final List<Hand> hands = _handPlugin!.detect(
         image,
         _cameraController.description.sensorOrientation,
@@ -76,13 +93,44 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
 
       if (mounted) {
         final provider = Provider.of<AirDrawingProvider>(context, listen: false);
-        if (hands.isNotEmpty) {
-          final landmarks = hands.first.landmarks
-              .map((lm) => Offset(lm.x, lm.y))
-              .toList();
-          provider.updateHandData(landmarks);
+
+        if (hands.isNotEmpty && hands.first.landmarks.isNotEmpty) {
+          final hand = hands.first;
+
+          // Convert landmarks to normalized coordinates
+          List<Offset> normalizedLandmarks = [];
+          for (var landmark in hand.landmarks) {
+            double x = landmark.x;
+            double y = landmark.y;
+
+            // Flip X for front camera (mirror effect)
+            if (_cameraController.description.lensDirection == CameraLensDirection.front) {
+              x = 1.0 - x;
+            }
+
+            normalizedLandmarks.add(Offset(x, y));
+          }
+
+          provider.updateHandData(normalizedLandmarks);
+
+          // Use index finger tip (landmark 8) for cursor
+          if (normalizedLandmarks.length > 8) {
+            final indexFingerTip = normalizedLandmarks[8];
+            provider.updateCursorPosition(indexFingerTip);
+
+            // Add drawing point if currently drawing
+            if (provider.isDrawing) {
+              provider.addPoint(indexFingerTip);
+            }
+          }
+
+          // Debug output
+          debugPrint('Hand detected with ${hand.landmarks.length} landmarks');
+
         } else {
           provider.updateHandData([]);
+          provider.updateCursorPosition(null);
+          debugPrint('No hands detected in frame');
         }
       }
     } catch (e) {
@@ -93,19 +141,23 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
   }
 
   void _showErrorSnackbar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: Colors.red,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
 
   void _showSuccessSnackbar(String message) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(message),
         backgroundColor: Colors.green,
+        duration: const Duration(seconds: 2),
       ),
     );
   }
@@ -169,25 +221,19 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
               icon: Icons.photo_library,
               title: 'Save to Gallery',
               subtitle: 'Save as image to your device gallery',
-              onTap: () async {
-                Navigator.pop(context, 'gallery');
-              },
+              onTap: () => Navigator.pop(context, 'gallery'),
             ),
             _buildSaveOption(
               icon: Icons.save,
               title: 'Save Locally',
               subtitle: 'Save to app documents folder',
-              onTap: () async {
-                Navigator.pop(context, 'local');
-              },
+              onTap: () => Navigator.pop(context, 'local'),
             ),
             _buildSaveOption(
               icon: Icons.code,
               title: 'Export as JSON',
               subtitle: 'Save drawing data for later editing',
-              onTap: () async {
-                Navigator.pop(context, 'json');
-              },
+              onTap: () => Navigator.pop(context, 'json'),
             ),
             const SizedBox(height: 16),
             TextButton(
@@ -277,6 +323,11 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
           title: const Text('Air Drawing Canvas'),
           backgroundColor: Colors.grey[900],
           elevation: 10,
+          leading: IconButton(
+            icon: const Icon(Icons.arrow_back),
+            onPressed: () => Navigator.pushReplacementNamed(context, '/mode-selection'),
+            tooltip: 'Back to Mode Selection',
+          ),
           actions: [
             IconButton(
               icon: const Icon(Icons.settings),
@@ -302,7 +353,7 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
                 _buildDrawingCanvas(screenSize, provider),
 
                 // Hand Skeleton (toggleable)
-                if (provider.showHandSkeleton)
+                if (provider.showHandSkeleton && provider.handDetected)
                   _buildHandSkeleton(screenSize, provider),
 
                 // Control Overlays
@@ -333,21 +384,35 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
   Widget _buildCameraPreview(Size screenSize, AirDrawingProvider provider) {
     return Stack(
       children: [
-        if (_isCameraReady)
+        if (_isCameraReady && _hasCameraPermission)
           CameraPreview(_cameraController)
         else
           Container(
             color: Colors.black,
-            child: const Center(
+            child: Center(
               child: Column(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  CircularProgressIndicator(),
-                  SizedBox(height: 20),
+                  const CircularProgressIndicator(),
+                  const SizedBox(height: 20),
                   Text(
-                    'Initializing Camera...',
-                    style: TextStyle(color: Colors.white),
+                    _isCameraReady ? 'Camera Ready' : 'Initializing Camera...',
+                    style: const TextStyle(color: Colors.white),
                   ),
+                  if (!_hasCameraPermission)
+                    Padding(
+                      padding: const EdgeInsets.only(top: 20),
+                      child: ElevatedButton(
+                        onPressed: () async {
+                          final status = await Permission.camera.request();
+                          if (status.isGranted) {
+                            setState(() => _hasCameraPermission = true);
+                            await _initializeCameraAndPlugin();
+                          }
+                        },
+                        child: const Text('Grant Camera Permission'),
+                      ),
+                    ),
                 ],
               ),
             ),
@@ -503,25 +568,25 @@ class _AirDrawingScreenState extends State<AirDrawingScreen> {
                 ToolButton(
                   icon: Icons.undo,
                   label: 'Undo',
-                  onTap: provider.points.isNotEmpty ? provider.undo : null, // Change this
+                  onTap: provider.points.isNotEmpty ? provider.undo : null,
                   color: Colors.blue,
                 ),
                 ToolButton(
                   icon: Icons.delete,
                   label: 'Clear',
-                  onTap: provider.points.isNotEmpty ? provider.clearDrawing : null, // Change this
+                  onTap: provider.points.isNotEmpty ? provider.clearDrawing : null,
                   color: Colors.red,
                 ),
                 ToolButton(
                   icon: Icons.palette,
                   label: 'Colors',
-                  onTap: _showColorPicker, // Change this
+                  onTap: _showColorPicker,
                   color: provider.selectedColor,
                 ),
                 ToolButton(
                   icon: Icons.save,
                   label: 'Save',
-                  onTap: provider.points.isNotEmpty ? _showSaveOptions : null, // Change this
+                  onTap: provider.points.isNotEmpty ? _showSaveOptions : null,
                   color: Colors.green,
                 ),
               ],
