@@ -1,10 +1,11 @@
+// lib/features/splash/splash_screen.dart
 import 'dart:async';
 import 'dart:math';
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 
 class SplashScreen extends StatefulWidget {
-  const SplashScreen({super.key});
+  const SplashScreen({Key? key}) : super(key: key);
 
   @override
   State<SplashScreen> createState() => _SplashScreenState();
@@ -15,9 +16,10 @@ class _SplashScreenState extends State<SplashScreen>
   late AnimationController _controller;
   late Animation<double> _scaleAnimation;
   late Animation<double> _fadeAnimation;
-  late Animation<Offset> _slideAnimation;
-  late Timer _drawingSimulationTimer;
-  final List<PaintPoint> _paintPoints = [];
+  late Animation<double> _rotationAnimation;
+  late Animation<double> _waveAnimation;
+  late Animation<Color?> _colorAnimation;
+
   final List<Color> _paintColors = [
     const Color(0xFFFF6B6B), // Red
     const Color(0xFF4ECDC4), // Teal
@@ -27,590 +29,676 @@ class _SplashScreenState extends State<SplashScreen>
     const Color(0xFFDDA0DD), // Purple
   ];
 
+  List<Particle> _particles = [];
+  double _waveOffset = 0.0;
+  bool _showContent = false;
+
   @override
   void initState() {
     super.initState();
 
-    // Initialize animation controller
     _controller = AnimationController(
-      duration: const Duration(seconds: 2),
+      duration: const Duration(seconds: 4),
       vsync: this,
     );
 
-    // Setup animations
     _scaleAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(
         parent: _controller,
-        curve: const Interval(0.0, 0.6, curve: Curves.elasticOut),
+        curve: const Interval(0.0, 0.7, curve: Curves.elasticOut),
       ),
     );
 
     _fadeAnimation = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(
         parent: _controller,
-        curve: const Interval(0.4, 1.0, curve: Curves.easeIn),
+        curve: const Interval(0.3, 1.0, curve: Curves.easeInOut),
       ),
     );
 
-    _slideAnimation = Tween<Offset>(
-      begin: const Offset(0.0, 0.5),
-      end: Offset.zero,
+    _rotationAnimation = Tween<double>(
+      begin: 0.0,
+      end: 2 * pi,
     ).animate(
       CurvedAnimation(
         parent: _controller,
-        curve: Curves.easeOutCubic,
+        curve: Curves.linear,
       ),
     );
 
-    // Start animations
+    _waveAnimation = Tween<double>(
+      begin: 0.0,
+      end: 2 * pi,
+    ).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeInOut,
+      ),
+    );
+
+    _colorAnimation = ColorTween(
+      begin: const Color(0xFF1A1F38),
+      end: const Color(0xFF0A0E21),
+    ).animate(
+      CurvedAnimation(
+        parent: _controller,
+        curve: Curves.easeInOut,
+      ),
+    );
+
     _controller.forward();
 
-    // Start drawing simulation
-    _startDrawingSimulation();
+    // Initialize particles
+    _initParticles();
 
-    // Navigate after 4 seconds
-    Timer(const Duration(seconds: 8), () {
-      Navigator.pushReplacementNamed(context, '/guide');
+    // Show content after slight delay
+    Future.delayed(const Duration(milliseconds: 300), () {
+      if (mounted) {
+        setState(() {
+          _showContent = true;
+        });
+      }
+    });
+
+    // Animate wave
+    Timer.periodic(const Duration(milliseconds: 40), (timer) {
+      if (mounted) {
+        setState(() {
+          _waveOffset += 0.06;
+        });
+      }
+    });
+
+    // Navigate after 4.5 seconds
+    Timer(const Duration(milliseconds: 8000), () {
+      if (mounted) {
+        Navigator.pushReplacementNamed(context, '/guide');
+      }
     });
   }
 
-  void _startDrawingSimulation() {
-    const simulationDuration = Duration(milliseconds: 3000);
-    const updateInterval = Duration(milliseconds: 30);
-    final totalUpdates = simulationDuration.inMilliseconds ~/ updateInterval.inMilliseconds;
-
-    int updateCount = 0;
-
-    _drawingSimulationTimer = Timer.periodic(updateInterval, (timer) {
-      if (!mounted) {
-        timer.cancel();
-        return;
-      }
-
-      if (updateCount >= totalUpdates) {
-        timer.cancel();
-        return;
-      }
-
-      setState(() {
-        // Add new paint points in a circular/spiral pattern
-        final progress = updateCount / totalUpdates;
-        final angle = 2 * pi * progress * 4; // 4 full rotations
-        final radius = 80.0 + 30.0 * sin(progress * pi * 2);
-
-        final x = 150.0 + radius * cos(angle);
-        final y = 150.0 + radius * sin(angle);
-
-        _paintPoints.add(PaintPoint(
-          offset: Offset(x, y),
-          color: _paintColors[updateCount % _paintColors.length],
-          size: 8.0 + 12.0 * sin(progress * pi),
-          timestamp: DateTime.now(),
-        ));
-
-        // Keep only recent points for performance
-        if (_paintPoints.length > 100) {
-          _paintPoints.removeAt(0);
-        }
-      });
-
-      updateCount++;
+  void _initParticles() {
+    final random = Random();
+    _particles = List.generate(40, (index) {
+      return Particle(
+        offset: Offset(
+          random.nextDouble() * 500 - 250,
+          random.nextDouble() * 500 - 250,
+        ),
+        size: random.nextDouble() * 6 + 2,
+        color: _paintColors[random.nextInt(_paintColors.length)],
+        speed: random.nextDouble() * 0.8 + 0.3,
+        angle: random.nextDouble() * 2 * pi,
+      );
     });
   }
 
   @override
   void dispose() {
     _controller.dispose();
-    _drawingSimulationTimer.cancel();
     super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFF0A0E21), // Dark background for contrast
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          // Animated background canvas texture
+      backgroundColor: const Color(0xFF0A0E21),
+      body: AnimatedBuilder(
+        animation: _controller,
+        builder: (context, child) {
+          return Stack(
+            fit: StackFit.expand,
+            children: [
+          // Animated gradient background with wave effect
           Container(
-            decoration: BoxDecoration(
-              gradient: RadialGradient(
-                center: Alignment.topRight,
-                radius: 1.5,
-                colors: [
-                  const Color(0xFF1A1F38).withOpacity(0.8),
-                  const Color(0xFF0A0E21),
-                ],
-                stops: const [0.0, 1.0],
-              ),
-            ),
+          decoration: BoxDecoration(
+          gradient: RadialGradient(
+            center: Alignment.center,
+            radius: 1.8,
+            colors: [
+              _colorAnimation.value ?? const Color(0xFF1A1F38),
+              const Color(0xFF0A0E21),
+            ],
+            stops: const [0.0, 0.7],
+          ),
+          ),
           ),
 
-          // Simulated paint strokes in background
+          // Wave effect overlay
           CustomPaint(
-            painter: _CanvasTexturePainter(points: _paintPoints),
+          painter: WavePainter(
+          waveOffset: _waveOffset,
+          progress: _controller.value,
+          ),
           ),
 
-          // Main content
-          Center(
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                // Animated logo container with paint theme
-                ScaleTransition(
-                  scale: _scaleAnimation,
-                  child: Container(
-                    width: 180,
-                    height: 180,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: const LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [Color(0xFF6C63FF), Color(0xFF4ECDC4)],
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: const Color(0xFF6C63FF).withOpacity(0.5),
-                          blurRadius: 30,
-                          spreadRadius: 5,
-                        ),
-                        BoxShadow(
-                          color: Colors.black.withOpacity(0.3),
-                          blurRadius: 20,
-                          spreadRadius: 2,
-                          offset: const Offset(0, 10),
-                        ),
-                      ],
-                    ),
-                    child: Stack(
-                      alignment: Alignment.center,
-                      children: [
-                        // Lottie animation (paint brush or hand drawing)
-                        Lottie.asset(
-                          'assets/animations/paint_brush.json', // You'll need to add this file
-                          width: 140,
-                          height: 140,
-                          fit: BoxFit.contain,
-                          errorBuilder: (context, error, stackTrace) {
-                            // Fallback icon if Lottie file doesn't exist
-                            return const Icon(
-                              Icons.brush,
-                              size: 80,
-                              color: Colors.white,
-                            );
-                          },
-                        ),
+          // Animated particles
+          ..._buildParticles(),
 
-                        // Canvas texture overlay
-                        Positioned.fill(
-                          child: ClipOval(
-                            child: Container(
-                              decoration: BoxDecoration(
-                                image: DecorationImage(
-                                  image: AssetImage(
-                                    'images/canvas_texture.png',
-                                  ),
-                                  fit: BoxFit.cover,
-                                  opacity: 0.2,
-                                  colorFilter: ColorFilter.mode(
-                                    Colors.white.withOpacity(0.1),
-                                    BlendMode.overlay,
-                                  ),
-                                ),
-                              ),
-                            ),
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
+          // Content
+          if (_showContent)
+          Opacity(
+          opacity: _fadeAnimation.value,
+          child: Center(
+          child: SingleChildScrollView(
+          child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+          // Main logo with Lottie animation
+          Stack(
+          alignment: Alignment.center,
+          children: [
+          // Outer glow rings
+          ..._buildGlowRings(),
 
-                const SizedBox(height: 40),
-
-                // App name with slide and fade animation
-                SlideTransition(
-                  position: _slideAnimation,
-                  child: FadeTransition(
-                    opacity: _fadeAnimation,
-                    child: Column(
-                      children: [
-                        RichText(
-                          text: TextSpan(
-                            children: [
-                              TextSpan(
-                                text: 'AI',
-                                style: TextStyle(
-                                  fontSize: 48,
-                                  fontWeight: FontWeight.w900,
-                                  color: const Color(0xFF4ECDC4),
-                                  shadows: [
-                                    Shadow(
-                                      blurRadius: 10,
-                                      color: const Color(0xFF4ECDC4).withOpacity(0.5),
-                                      offset: const Offset(0, 0),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                              TextSpan(
-                                text: ' SKETCH',
-                                style: TextStyle(
-                                  fontSize: 48,
-                                  fontWeight: FontWeight.w900,
-                                  color: Colors.white,
-                                  shadows: [
-                                    const Shadow(
-                                      blurRadius: 10,
-                                      color: Colors.black,
-                                      offset: Offset(2, 2),
-                                    ),
-                                  ],
-                                ),
-                              ),
-                            ],
-                          ),
-                        ),
-                        const SizedBox(height: 5),
-                        Text(
-                          'Assistant',
-                          style: TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.w300,
-                            color: Colors.white.withOpacity(0.9),
-                            letterSpacing: 3,
-                            fontStyle: FontStyle.italic,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 30),
-
-                // Tagline with typing animation effect
-                FadeTransition(
-                  opacity: _fadeAnimation,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 12),
-                    decoration: BoxDecoration(
-                      color: Colors.white.withOpacity(0.05),
-                      borderRadius: BorderRadius.circular(20),
-                      border: Border.all(
-                        color: Colors.white.withOpacity(0.1),
-                        width: 1,
-                      ),
-                    ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        Icon(
-                          Icons.auto_awesome,
-                          color: const Color(0xFFFF6B6B),
-                          size: 20,
-                        ),
-                        const SizedBox(width: 12),
-                        Text(
-                          'Draw Smart • Create Perfect',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.w500,
-                            color: Colors.white.withOpacity(0.8),
-                            letterSpacing: 1,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-
-                const SizedBox(height: 40),
-
-                // Loading indicator with paint theme
-                FadeTransition(
-                  opacity: _fadeAnimation,
-                  child: Column(
-                    children: [
-                      Stack(
-                        alignment: Alignment.center,
-                        children: [
-                          SizedBox(
-                            width: 60,
-                            height: 60,
-                            child: CircularProgressIndicator(
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                const Color(0xFF6C63FF).withOpacity(0.3),
-                              ),
-                              strokeWidth: 2,
-                            ),
-                          ),
-                          Container(
-                            width: 40,
-                            height: 40,
-                            decoration: BoxDecoration(
-                              shape: BoxShape.circle,
-                              gradient: LinearGradient(
-                                colors: [
-                                  const Color(0xFF6C63FF),
-                                  const Color(0xFF4ECDC4),
-                                ],
-                                begin: Alignment.topLeft,
-                                end: Alignment.bottomRight,
-                              ),
-                            ),
-                            child: const Icon(
-                              Icons.brush,
-                              color: Colors.white,
-                              size: 20,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 15),
-                      Text(
-                        'Initializing AI Drawing Engine...',
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: Colors.white.withOpacity(0.6),
-                          letterSpacing: 0.5,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-
-                const SizedBox(height: 60),
-
-                // Team info (positioned with animation)
-                Positioned(
-                  bottom: 30,
-                  left: 0,
-                  right: 0,
-                  child: FadeTransition(
-                    opacity: _fadeAnimation,
-                    child: Column(
-                      children: [
-                        Wrap(
-                          spacing: 8,
-                          runSpacing: 4,
-                          alignment: WrapAlignment.center,
-                          children: [
-                            _buildTeamMember('NEHA SALEEM'),
-                            Text('•', style: TextStyle(color: Colors.white.withOpacity(0.3))),
-                            _buildTeamMember('SEHAR SHAHID'),
-                            Text('•', style: TextStyle(color: Colors.white.withOpacity(0.3))),
-                            _buildTeamMember('ALEENA KAMRAN'),
-                          ],
-                        ),
-                        const SizedBox(height: 12),
-                        Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 8),
-                          decoration: BoxDecoration(
-                            color: Colors.white.withOpacity(0.03),
-                            borderRadius: BorderRadius.circular(15),
-                            border: Border.all(
-                              color: Colors.white.withOpacity(0.05),
-                              width: 1,
-                            ),
-                          ),
-                          child: Text(
-                            'Supervisor: Miss Anila Majeed',
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: Colors.white.withOpacity(0.5),
-                              fontStyle: FontStyle.italic,
-                            ),
-                          ),
-                        ),
-                        const SizedBox(height: 8),
-                        Text(
-                          'LAHORE COLLEGE FOR WOMEN UNIVERSITY',
-                          style: TextStyle(
-                            fontSize: 10,
-                            color: Colors.white.withOpacity(0.4),
-                            letterSpacing: 1,
-                          ),
-                        ),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          // Lottie animation container
+          Container(
+          width: 200,
+          height: 200,
+          decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: [
+          Color(0xFF6C63FF),
+          Color(0xFF4ECDC4),
+          ],
           ),
-        ],
+          boxShadow: [
+          BoxShadow(
+          color: const Color(0xFF6C63FF)
+              .withOpacity(0.6),
+          blurRadius: 40,
+          spreadRadius: 8,
+          ),
+          BoxShadow(
+          color: Colors.black.withOpacity(0.4),
+          blurRadius: 30,
+          spreadRadius: 5,
+          offset: const Offset(0, 15),
+          ),
+          ],
+          ),
+          child: ClipOval(
+          child: Lottie.asset(
+          'assets/animations/paint_brush.json',
+          width: 180,
+          height: 180,
+          fit: BoxFit.contain,
+          animate: true,
+          repeat: true,
+          frameRate: FrameRate.max,
+          errorBuilder: (context, error, stackTrace) {
+          return const Center(
+          child: Icon(
+          Icons.brush,
+          size: 80,
+          color: Colors.white,
+          ),
+          );
+          },
+          ),
+          ),
+          ),
+
+          // Floating animated dots
+          ..._buildFloatingDots(),
+          ],
+          ),
+
+          const SizedBox(height: 40),
+
+          // App title with gradient and shine effect
+          ShaderMask(
+          shaderCallback: (bounds) {
+          return const LinearGradient(
+          colors: [
+          Color(0xFF4ECDC4),
+          Color(0xFF6C63FF),
+          Color(0xFFFF6B6B),
+          ],
+          stops: [0.0, 0.5, 1.0],
+          ).createShader(bounds);
+          },
+          child: AnimatedContainer(
+          duration: const Duration(milliseconds: 500),
+          padding: const EdgeInsets.symmetric(
+          horizontal: 20, vertical: 8),
+          decoration: BoxDecoration(
+          border: Border.all(
+          color: Colors.white.withOpacity(0.2),
+          width: 1,
+          ),
+          borderRadius: BorderRadius.circular(20),
+          gradient: LinearGradient(
+          colors: [
+          Colors.white.withOpacity(0.1),
+          Colors.white.withOpacity(0.05),
+          ],
+          ),
+          ),
+          child: const Text(
+          'AI SKETCH ASSISTANT',
+          style: TextStyle(
+          fontSize: 32,
+          fontWeight: FontWeight.w900,
+          color: Colors.white,
+          letterSpacing: 1.5,
+          ),
+          ),
+          ),
+          ),
+
+          const SizedBox(height: 12),
+
+          // Tagline
+          Text(
+          'Intelligent Drawing & Auto-Correction',
+          style: TextStyle(
+          fontSize: 14,
+          fontWeight: FontWeight.w300,
+          color: Colors.white.withOpacity(0.9),
+          letterSpacing: 1.0,
+          fontStyle: FontStyle.italic,
+          ),
+          ),
+
+          const SizedBox(height: 40),
+
+          // AI Loading indicator
+          Column(
+          children: [
+          Stack(
+          alignment: Alignment.center,
+          children: [
+          // Outer ring
+          SizedBox(
+          width: 80,
+          height: 80,
+          child: CircularProgressIndicator(
+          value: _controller.value,
+          strokeWidth: 3,
+          valueColor: AlwaysStoppedAnimation<Color>(
+          const Color(0xFF6C63FF).withOpacity(0.4),
+          ),
+          ),
+          ),
+          // Middle ring
+          SizedBox(
+          width: 60,
+          height: 60,
+          child: CircularProgressIndicator(
+          value: _controller.value,
+          strokeWidth: 4,
+          valueColor: AlwaysStoppedAnimation<Color>(
+          const Color(0xFF4ECDC4).withOpacity(0.6),
+          ),
+          ),
+          ),
+          // Inner AI icon
+          Container(
+          width: 40,
+          height: 40,
+          decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          gradient: const LinearGradient(
+          colors: [
+          Color(0xFF6C63FF),
+          Color(0xFF4ECDC4),
+          ],
+          ),
+          boxShadow: [
+          BoxShadow(
+          color: const Color(0xFF6C63FF)
+              .withOpacity(0.6),
+          blurRadius: 15,
+          spreadRadius: 3,
+          ),
+          ],
+          ),
+          child: const Icon(
+          Icons.auto_awesome,
+          color: Colors.white,
+          size: 20,
+          ),
+          ),
+          ],
+          ),
+          const SizedBox(height: 15),
+          // Loading text
+          SizedBox(
+          width: 280,
+          child: Column(
+          children: [
+          Text(
+          _getLoadingText(_controller.value),
+          style: TextStyle(
+          fontSize: 13,
+          color: Colors.white.withOpacity(0.8),
+          letterSpacing: 0.8,
+          ),
+          textAlign: TextAlign.center,
+          ),
+          const SizedBox(height: 8),
+          LinearProgressIndicator(
+          value: _controller.value,
+          backgroundColor: Colors.white.withOpacity(0.1),
+          valueColor: AlwaysStoppedAnimation<Color>(
+          const Color(0xFF4ECDC4),
+          ),
+          borderRadius: BorderRadius.circular(8),
+          minHeight: 5,
+          ),
+          ],
+          ),
+          ),
+          ],
+          ),
+
+          const SizedBox(height: 80), // Space for bottom team info
+          ],
+          ),
+          ),
+          ),
+          ),
+
+
+          // Team info at bottom - FIXED VERSION
+          Positioned(
+          bottom: 15,
+          left: 0,
+          right: 0,
+          child: AnimatedSlide(
+          duration: const Duration(milliseconds: 800),
+          curve: Curves.easeOut,
+          offset: _controller.value > 0.6 ? Offset.zero : const Offset(0, 1),
+          child: Opacity(
+          opacity: _controller.value > 0.6 ? 1.0 : 0.0,
+          child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          child: Column(
+          children: [
+          // Team members - VERY COMPACT
+          Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+
+
+          _buildTeamMemberChip('Sehar Shahid , Neha Saleem, Aleena kamran', 1),
+
+          ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // Supervisor info - COMPACT
+          Container(
+          padding: const EdgeInsets.symmetric(
+          horizontal: 20,
+          vertical: 8,
+          ),
+          decoration: BoxDecoration(
+          color: Colors.white.withOpacity(0.03),
+          borderRadius: BorderRadius.circular(15),
+          border: Border.all(
+          color: Colors.white.withOpacity(0.08),
+          width: 1,
+          ),
+          ),
+          child: Column(
+          children: [
+          Text(
+          'Supervised by',
+          style: TextStyle(
+          fontSize: 10,
+          color: Colors.white.withOpacity(0.5),
+          fontStyle: FontStyle.italic,
+          ),
+          ),
+          const SizedBox(height: 2),
+          Text(
+          'Miss Anila Majeed',
+          style: TextStyle(
+          fontSize: 13,
+          color: const Color(0xFF4ECDC4),
+          fontWeight: FontWeight.w600,
+          ),
+          ),
+          ],
+          ),
+          ),
+
+          const SizedBox(height: 10),
+
+          // University - COMPACT
+          Container(
+          padding: const EdgeInsets.symmetric(horizontal: 15),
+          child: Column(
+          children: [
+          Container(
+          height: 1,
+          width: 100,
+          decoration: BoxDecoration(
+          gradient: LinearGradient(
+          colors: [
+          Colors.transparent,
+          Colors.white.withOpacity(0.2),
+          Colors.transparent,
+          ],
+          ),
+          ),
+          ),
+          const SizedBox(height: 6),
+          const Text(
+          'LCWU • Computer Science',
+          style: TextStyle(
+          fontSize: 9,
+          color: Colors.white54,
+          letterSpacing: 1.2,
+          ),
+          textAlign: TextAlign.center,
+          ),
+          ],
+          ),
+          ),
+          ],
+          ),
+          ),
+          ),
+          ),
+          ),
+          ],
+          );
+        },
       ),
     );
   }
 
-  Widget _buildTeamMember(String name) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: const Color(0xFF6C63FF).withOpacity(0.1),
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(
-          color: const Color(0xFF6C63FF).withOpacity(0.2),
-          width: 1,
+  List<Widget> _buildGlowRings() {
+    return List.generate(3, (index) {
+      final size = 220 + (index * 40);
+      final opacity = 0.15 - (index * 0.05);
+
+      return AnimatedBuilder(
+        animation: _rotationAnimation,
+        builder: (context, child) {
+          return Transform.rotate(
+            angle: _rotationAnimation.value * (index.isOdd ? 1 : -1),
+            child: Container(
+              width: size.toDouble(),
+              height: size.toDouble(),
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                border: Border.all(
+                  color: const Color(0xFF4ECDC4).withOpacity(opacity),
+                  width: 1.5,
+                ),
+              ),
+            ),
+          );
+        },
+      );
+    });
+  }
+
+  List<Widget> _buildParticles() {
+    return _particles.map((particle) {
+      final offsetX = particle.offset.dx +
+          sin(_waveOffset + particle.angle) * particle.speed * 50;
+      final offsetY = particle.offset.dy +
+          cos(_waveOffset + particle.angle) * particle.speed * 50;
+
+      return Positioned(
+        left: offsetX + MediaQuery.of(context).size.width / 2,
+        top: offsetY + MediaQuery.of(context).size.height / 2,
+        child: Container(
+          width: particle.size,
+          height: particle.size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: particle.color.withOpacity(0.5),
+            boxShadow: [
+              BoxShadow(
+                color: particle.color.withOpacity(0.3),
+                blurRadius: 8,
+                spreadRadius: 2,
+              ),
+            ],
+          ),
         ),
-      ),
-      child: Text(
-        name,
-        style: TextStyle(
-          fontSize: 11,
-          color: Colors.white.withOpacity(0.7),
-          fontWeight: FontWeight.w500,
+      );
+    }).toList();
+  }
+
+  List<Widget> _buildFloatingDots() {
+    return List.generate(12, (index) {
+      final angle = (index / 12) * 2 * pi;
+      final radius = 140.0;
+      final x = radius * cos(angle + _waveOffset * 2);
+      final y = radius * sin(angle + _waveOffset * 2);
+      final color = _paintColors[index % _paintColors.length];
+      final size = 6 + sin(_waveOffset * 3 + index) * 2;
+
+      return Positioned(
+        left: 100 + x,
+        top: 100 + y,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 300),
+          width: size,
+          height: size,
+          decoration: BoxDecoration(
+            shape: BoxShape.circle,
+            color: color,
+            boxShadow: [
+              BoxShadow(
+                color: color.withOpacity(0.7),
+                blurRadius: 12,
+                spreadRadius: 3,
+              ),
+            ],
+          ),
+        ),
+      );
+    });
+  }
+
+  // ULTRA COMPACT team member chip
+  Widget _buildTeamMemberChip(String name, int index) {
+    final color = _paintColors[index % _paintColors.length];
+    final show = _controller.value > (0.6 + (index * 0.2));
+
+    return AnimatedOpacity(
+      duration: const Duration(milliseconds: 500),
+      opacity: show ? 1.0 : 0.0,
+      child: Container(
+        padding: const EdgeInsets.symmetric(
+          horizontal: 10,
+          vertical: 5,
+        ),
+        decoration: BoxDecoration(
+          color: color.withOpacity(0.12),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: color.withOpacity(0.25),
+            width: 1,
+          ),
+        ),
+        child: Text(
+          name,
+          style: TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: Colors.white.withOpacity(0.9),
+          ),
         ),
       ),
     );
+  }
+
+  String _getLoadingText(double progress) {
+    if (progress < 0.25) return 'Loading AI Models...';
+    if (progress < 0.5) return 'Initializing Drawing Engine...';
+    if (progress < 0.75) return 'Setting up Auto-Correction...';
+    return 'Ready to Create Magic!';
   }
 }
 
-// Helper class for paint points
-class PaintPoint {
+// Helper classes
+class Particle {
   final Offset offset;
-  final Color color;
   final double size;
-  final DateTime timestamp;
+  final Color color;
+  final double speed;
+  final double angle;
 
-  PaintPoint({
+  Particle({
     required this.offset,
-    required this.color,
     required this.size,
-    required this.timestamp,
+    required this.color,
+    required this.speed,
+    required this.angle,
   });
 }
 
-// Custom painter for canvas texture and paint strokes
-class _CanvasTexturePainter extends CustomPainter {
-  final List<PaintPoint> points;
+class WavePainter extends CustomPainter {
+  final double waveOffset;
+  final double progress;
 
-  _CanvasTexturePainter({required this.points});
+  WavePainter({required this.waveOffset, required this.progress});
 
   @override
   void paint(Canvas canvas, Size size) {
-    // Draw subtle canvas grid
-    final gridPaint = Paint()
-      ..color = Colors.white.withOpacity(0.02)
-      ..strokeWidth = 0.5;
+    final paint = Paint()
+      ..shader = LinearGradient(
+        colors: [
+          const Color(0xFF6C63FF).withOpacity(0.05),
+          const Color(0xFF4ECDC4).withOpacity(0.03),
+          Colors.transparent,
+        ],
+      ).createShader(Rect.fromLTRB(0, 0, size.width, size.height))
+      ..style = PaintingStyle.fill;
 
-    const gridSize = 40.0;
-    for (double x = 0; x < size.width; x += gridSize) {
-      canvas.drawLine(Offset(x, 0), Offset(x, size.height), gridPaint);
+    final path = Path();
+    path.moveTo(0, size.height * 0.7);
+
+    for (double x = 0; x < size.width; x += 10) {
+      final y = size.height * 0.7 +
+          sin(x * 0.01 + waveOffset) * 30 * progress +
+          cos(x * 0.005 + waveOffset * 0.5) * 20 * progress;
+      path.lineTo(x, y);
     }
-    for (double y = 0; y < size.height; y += gridSize) {
-      canvas.drawLine(Offset(0, y), Offset(size.width, y), gridPaint);
-    }
 
-    // Draw animated paint strokes
-    for (int i = 0; i < points.length; i++) {
-      final point = points[i];
-      final age = DateTime.now().difference(point.timestamp).inMilliseconds / 1000.0;
-      final opacity = 1.0 - (age / 3.0).clamp(0.0, 1.0);
+    path.lineTo(size.width, size.height);
+    path.lineTo(0, size.height);
+    path.close();
 
-      if (opacity > 0) {
-        final paint = Paint()
-          ..color = point.color.withOpacity(opacity * 0.3)
-          ..strokeWidth = point.size
-          ..strokeCap = StrokeCap.round
-          ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 8.0);
-
-        // Draw the point
-        canvas.drawCircle(point.offset, point.size / 2, paint);
-
-        // Draw connecting line to next point
-        if (i < points.length - 1) {
-          final nextPoint = points[i + 1];
-          final nextOpacity = 1.0 -
-              (DateTime.now().difference(nextPoint.timestamp).inMilliseconds / 1000.0).clamp(0.0, 1.0);
-
-          if (nextOpacity > 0) {
-            final linePaint = Paint()
-              ..color = point.color.withOpacity((opacity + nextOpacity) * 0.15)
-              ..strokeWidth = point.size * 0.7
-              ..strokeCap = StrokeCap.round
-              ..maskFilter = const MaskFilter.blur(BlurStyle.normal, 4.0);
-
-            canvas.drawLine(point.offset, nextPoint.offset, linePaint);
-          }
-        }
-      }
-    }
+    canvas.drawPath(path, paint);
   }
 
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
-}
-
-// Fallback version without Lottie (if you don't have the animation file)
-class SimpleSplashScreen extends StatelessWidget {
-  const SimpleSplashScreen({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xFF0A0E21),
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            // Simple animated container without Lottie
-            Container(
-              width: 150,
-              height: 150,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                gradient: const LinearGradient(
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
-                  colors: [Color(0xFF6C63FF), Color(0xFF4ECDC4)],
-                ),
-                boxShadow: [
-                  BoxShadow(
-                    color: const Color(0xFF6C63FF).withOpacity(0.5),
-                    blurRadius: 20,
-                    spreadRadius: 3,
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.auto_awesome,
-                size: 70,
-                color: Colors.white,
-              ),
-            ),
-            const SizedBox(height: 30),
-            const Text(
-              'AI SKETCH ASSISTANT',
-              style: TextStyle(
-                fontSize: 32,
-                fontWeight: FontWeight.w900,
-                color: Colors.white,
-                letterSpacing: 1.5,
-              ),
-            ),
-            const SizedBox(height: 10),
-            Text(
-              'Draw Smart • Create Perfect',
-              style: TextStyle(
-                fontSize: 16,
-                color: Colors.white.withOpacity(0.8),
-                fontStyle: FontStyle.italic,
-              ),
-            ),
-            const SizedBox(height: 50),
-            CircularProgressIndicator(
-              valueColor: AlwaysStoppedAnimation<Color>(
-                const Color(0xFF6C63FF).withOpacity(0.8),
-              ),
-              strokeWidth: 2,
-            ),
-          ],
-        ),
-      ),
-    );
+  bool shouldRepaint(covariant WavePainter oldDelegate) {
+    return waveOffset != oldDelegate.waveOffset ||
+        progress != oldDelegate.progress;
   }
 }
