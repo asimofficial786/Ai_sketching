@@ -12,6 +12,7 @@
         android:label="AI Sketch Assistant"
         android:icon="@mipmap/ic_launcher"
         android:theme="@style/LaunchTheme">
+        android:enableOnBackInvokedCallback="true">
         
         <activity
             android:name=".MainActivity"
